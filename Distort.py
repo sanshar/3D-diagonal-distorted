@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from jax import lax
 
 def chebfit(F,g1,g2,g3,S):
   c = np.einsum('ijk,ia->ajk',F,g1)
@@ -90,6 +91,61 @@ def flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3):
     J = J * rhofac
     J = J / np.sum(J)
   return T1,T2,T3,J
+
+def create_cond_and_body(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
+
+  #@jit
+  def body_fun(carry):
+    x1,x2,x3,T1,T2,T3,rho,iter = carry
+    x1 = x1 - alpha*(T1-y1)
+    x2 = x2 - alpha*(T2-y2)
+    x3 = x3 - alpha*(T3-y3)
+    T1,T2,T3,rho = knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c)
+    return (x1,x2,x3,T1,T2,T3,rho,iter+1)
+
+  #@jit
+  def cond_fun(carry):
+    x1,x2,x3,T1,T2,T3,rho,iter = carry
+    relErr1 = np.max(np.abs(T1-y1))/(b1-a1)
+    relErr2 = np.max(np.abs(T2-y2))/(b2-a2)
+    relErr3 = np.max(np.abs(T3-y3))/(b3-a3)
+    cond1 = relErr1 > tol
+    cond2 = relErr2 > tol
+    cond3 = relErr3 > tol
+    cond4 = iter < maxIter
+    return (cond1+cond2+cond3)*cond4
+
+  return body_fun, cond_fun
+
+def inv_knothe3dcheb(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
+  body_fun, cond_fun = create_cond_and_body(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol)
+  x1 = y1
+  x2 = y2
+  x3 = y3
+  T1, T2, T3, rho = knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c)
+  init_val = (x1,x2,x3,T1,T2,T3,rho,0)
+  x1,x2,x3,T1,T2,T3,rho,iter = lax.while_loop(cond_fun, body_fun, init_val)
+  return x1,x2,x3,1/rho,iter
+
+def inv_flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,maxIter,alpha,tol):
+  T1 = x1
+  T2 = x2
+  T3 = x3
+  N = C.shape[3]
+  p = x1.shape[0]
+  Jinv = np.ones(p)/p
+  for n in range(N):
+    c = C[:,:,:,N-n-1]
+    if np.mod(N-n-1,3)==0:
+      T1,T2,T3,rhoinvfac,_ = inv_knothe3dcheb(T1,T2,T3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol)
+    elif np.mod(N-n-1,3)==1:
+      T3,T1,T2,rhoinvfac,_ = inv_knothe3dcheb(T3,T1,T2,a3,b3,a1,b1,a2,b2,np.transpose(c,(2,0,1)),maxIter,alpha,tol)
+    else:
+      T2,T3,T1,rhoinvfac,_ = inv_knothe3dcheb(T2,T3,T1,a2,b2,a3,b3,a1,b1,np.transpose(c,(1,2,0)),maxIter,alpha,tol)
+    Jinv = Jinv * rhoinvfac
+    Jinv = Jinv / np.sum(Jinv)
+  return T1,T2,T3,Jinv
+
 
 if __name__ == '__main__':
     # bounding box
