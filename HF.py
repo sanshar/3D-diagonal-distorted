@@ -1,7 +1,8 @@
-import pyscf, LindseyWavelets, Distort, time, scipy
+import pyscf, LindseyWavelets, Distort, time, scipy, Distort2
 import numpy as np
 from diis import FDiisContext
 import matplotlib.pyplot as plt
+from jax import grad, jit, vmap, jacfwd, jacrev
 
 import ctypes, numpy
 ndpointer = numpy.ctypeslib.ndpointer
@@ -20,17 +21,19 @@ def getKinetic(orbs, G2, nmesh, factor):
     
     orbsG = (1.+0j)*orbs
     for i in range(nbas):
-        orbsG[i] = np.fft.fftn(orbsG[i].reshape(nmesh)).flatten()*factor
+        orbsG[i] = np.fft.fftn(orbsG[i].reshape(nmesh)).flatten()/ngrid**0.5
     KE = orbsG.dot(np.einsum('gi,g->gi', orbsG.T.conj(), G2/2.)) 
     return KE
 
-def getNuclear(orbs, SF, G2, nmesh, w):
-    G2[0] = 1.0
-    
-    potG = np.pi*4.*SF/G2
-    potG[0] = 0.
-    potR = np.fft.ifftn(potG.reshape(nmesh)).flatten() 
-    return orbs.dot(np.einsum('i,ij->ij',potR,orbs.T)) 
+def getNuclearPot(grid, nucPos, Z):
+    pot = 0.*grid[:,0]
+    rloc, C1, C2, C3, C4 = 0.2, -4.18023680,  0.72507482, 0., 0.
+    #rloc, C1, C2, C3, C4 = 0.20000000, -9.11202340, 1.69836797, 0., 0.
+    for zi, pos in enumerate(nucPos):
+        r = np.einsum('gi,gi->g', grid-pos, grid-pos)**0.5 + 1.e-8
+        rfac = r/rloc
+        pot += -Z[zi] * scipy.special.erf(rfac/2.**0.5)/r + np.exp(-rfac**2/2) * (C1 + C2 * rfac**2 + C3 * rfac**4 + C4 * rfac**6)
+    return pot
 
 def getV2e(orbs, G2, nmesh, J, factor):
     nbas, ngrid = orbs.shape[0], orbs.shape[1]
@@ -49,6 +52,20 @@ def getV2e(orbs, G2, nmesh, J, factor):
 def getOrbVal(x, L):
     return LindseyWavelets.getVal(x) + LindseyWavelets.getVal(x+L) + LindseyWavelets.getVal(x-L)
 
+##x is between 0 and 2pi
+def basVal(x, N):
+    xi = x+1.e-8
+    mat  = 1./N * np.sin(N*xi/2) / np.tan(xi/2) + 1.j*np.sin(N*xi/2)/N    
+    mat[abs(x)<1e-8] = 1.
+    return mat
+
+def basprimeVal(x, N):
+    xi = x+1.e-8
+    mat =  1/2 * np.cos(N*xi/2) / np.tan(xi/2)  - np.sin(N*xi/2)/np.sin(xi/2)**2/2/N + 1.j*np.cos(N*xi/2)/2.
+    mat[abs(x)<1e-8] = 1.j/2.
+    
+    return mat
+
 #'''
 def getOrbsSlow(basgrid, grid, Jacobian, dxbas, dybas, dzbas, Lx, Ly, Lz):
     nbas, ngrid = basgrid.shape[0], grid.shape[0]
@@ -64,44 +81,45 @@ def getOrbsSlow(basgrid, grid, Jacobian, dxbas, dybas, dzbas, Lx, Ly, Lz):
     return orbs
 #'''
 
-def getOrbs(basgrid, grid, Jacobian, dxbas, dybas, dzbas, Lx, Ly, Lz):
+def getOrbs(basgrid, grid, basMesh, ax, bx, ay, by, az, bz):
     nbas, ngrid = basgrid.shape[0], grid.shape[0]
 
     orbs = np.zeros((nbas, ngrid))
     orbx, orby, orbz = np.zeros((ngrid,)), np.zeros((ngrid,)), np.zeros((ngrid,))
+    gridx, gridy, gridz = grid[:,0], grid[:,1], grid[:,2]
+    Lx, Ly, Lz = (bx-ax), (by-ay), (bz-az)
+    
+    orbval = np.zeros((nbas, ngrid), dtype=complex)
+    for i in range(nbas):
+        orbx = basVal( (gridx - basgrid[i,0]) * 2. * np.pi / Lx, basMesh[0])
+        orby = basVal( (gridy - basgrid[i,1]) * 2. * np.pi / Ly, basMesh[1])
+        orbz = basVal( (gridz - basgrid[i,2]) * 2. * np.pi / Lz, basMesh[2])
 
-    for i, baspt in enumerate(basgrid):
-        orbx *= 0.
-        orby *= 0.
-        orbz *= 0.
-        
-        #import pdb
-        #pdb.set_trace()
-        #print(i, nbas)
-        LindseyVals( (grid[:,0]-baspt[0])/dxbas, ngrid, orbx) 
-        LindseyVals( (grid[:,0]-baspt[0] + Lx)/dxbas, ngrid, orbx) 
-        LindseyVals( (grid[:,0]-baspt[0] - Lx)/dxbas, ngrid, orbx) 
-        orbx = orbx/ dxbas**0.5
+        orbval[i] = orbx*orby*orbz
+    return orbval
 
-        LindseyVals( (grid[:,1]-baspt[1])/dybas, ngrid, orby) 
-        LindseyVals( (grid[:,1]-baspt[1] + Ly)/dybas, ngrid, orby) 
-        LindseyVals( (grid[:,1]-baspt[1] - Ly)/dybas, ngrid, orby) 
-        orby = orby/ dybas**0.5
+def getOrbsDeriv(basgrid, grid, basMesh, ax, bx, ay, by, az, bz):
+    nbas, ngrid = basgrid.shape[0], grid.shape[0]
 
-        LindseyVals( (grid[:,2]-baspt[2])/dzbas, ngrid, orbz) 
-        LindseyVals( (grid[:,2]-baspt[2] + Lz)/dzbas, ngrid, orbz) 
-        LindseyVals( (grid[:,2]-baspt[2] - Lz)/dzbas, ngrid, orbz) 
-        orbz = orbz/ dzbas**0.5
+    orbs = np.zeros((nbas, ngrid))
+    orbx, orby, orbz = np.zeros((ngrid,)), np.zeros((ngrid,)), np.zeros((ngrid,))
+    gridx, gridy, gridz = grid[:,0]+1e-8, grid[:,1]+1e-8, grid[:,2]+1e-8
+    Lx, Ly, Lz = (bx-ax), (by-ay), (bz-az)
+    
+    orbval = np.zeros((nbas, ngrid, 3), dtype=complex)
+    for i in range(nbas):
+        orbx   = basVal( (gridx - basgrid[i,0]) * 2. * np.pi / Lx, basMesh[0])
+        orby   = basVal( (gridy - basgrid[i,1]) * 2. * np.pi / Ly, basMesh[1])
+        orbz   = basVal( (gridz - basgrid[i,2]) * 2. * np.pi / Lz, basMesh[2])
 
-        orbs[i] = orbx * orby * orbz * Jacobian**0.5
-        '''        
-        orbs[i] = getOrbVal( (grid[:,0]-baspt[0])/dxbas, Lx/dxbas) / dxbas**0.5 \
-            * getOrbVal( (grid[:,1]-baspt[1])/dybas, Ly/dybas) / dybas**0.5 \
-            * getOrbVal( (grid[:,2]-baspt[2])/dzbas, Lz/dzbas) / dzbas**0.5 
+        orbxdx = basprimeVal( (gridx - basgrid[i,0]) * 2. * np.pi / Lx, basMesh[0]) * 2. * np.pi / Lx
+        orbydy = basprimeVal( (gridy - basgrid[i,1]) * 2. * np.pi / Ly, basMesh[1]) * 2. * np.pi / Ly
+        orbzdz = basprimeVal( (gridz - basgrid[i,2]) * 2. * np.pi / Lz, basMesh[2]) * 2. * np.pi / Lz
 
-        orbs[i] = orbs[i] * Jacobian**0.5
-        '''
-    return orbs
+        orbval[i,:,0] = orbxdx*orby  *orbz
+        orbval[i,:,1] = orbx  *orbydy*orbz
+        orbval[i,:,2] = orbx  *orby  *orbzdz
+    return orbval
 
 def get_Gv(nmesh,cell):
     rx = np.fft.fftfreq(nmesh[0], 1./nmesh[0])
@@ -112,7 +130,7 @@ def get_Gv(nmesh,cell):
 
 def makeJK(rdm, V2e, factor):
   if (len(V2e.shape) == 2):
-    J = np.diag(V2e.dot(rdm.diagonal()) * factor)
+    J = np.diag(V2e.dot(rdm.diagonal()) * factor).real
     K = V2e * rdm * factor
   else:
     J = np.einsum('ijkl,lk->ij', V2e, rdm)
@@ -121,145 +139,124 @@ def makeJK(rdm, V2e, factor):
   return J, K
 
 def get_grad(orbs, nelec, fock):
-    return np.dot(orbs[:,nelec//2:].T, fock.dot(orbs[:,:nelec//2])).flatten() 
+    return np.dot(orbs[:,nelec//2:].T.conj(), fock.dot(orbs[:,:nelec//2])).flatten() 
 
-def HF(cell, basMesh, nmesh, mf):
-    a1,b1,a2,b2,a3,b3 = 0,cell.a[0,0],0,cell.a[1,1],0,cell.a[2,2]
+def HF(cell, basMesh, nmesh, mf, eps = 1.e-6):
+    a1,b1,a2,b2,a3,b3 = -cell.a[0,0]//2,cell.a[0,0]//2,-cell.a[1,1]//2,cell.a[1,1]//2,-cell.a[2,2]//2,cell.a[2,2]//2
 
-    grid = pyscf.lib.cartesian_prod([np.arange(x)/x for x in nmesh])
-    grid = np.dot(grid, cell.lattice_vectors())
-    #grid = cell.get_uniform_grids(nmesh)
-    basgrid = np.dot(pyscf.lib.cartesian_prod([np.arange(x)/x for x in basMesh]), cell.lattice_vectors())
-    #basgrid = cell.get_uniform_grids(basMesh)
+    #grid = pyscf.lib.cartesian_prod([np.arange(x)/x for x in nmesh])
+    #grid = np.dot(grid, cell.lattice_vectors())
+    grid = cell.get_uniform_grids(nmesh)
+    #basgrid = np.dot(pyscf.lib.cartesian_prod([np.arange(x)/x for x in basMesh]), cell.lattice_vectors())
+    basgrid = cell.get_uniform_grids(basMesh)
+    
 
     dxbas, dybas, dzbas = (b1-a1)/basMesh[0], (b2-a2)/basMesh[1], (b3-a3)/basMesh[2]
-    C = np.fromfile("cheb.bin", dtype=np.float64).reshape(20, 20, 20, -1)
+    C = np.fromfile("cheb.bin", dtype=np.float64).reshape(40, 40, 40, -1)
+
+    if (C.shape[3]%3 != 0):
+        print("the number of layers should be multiple of 3")
+        exit(0)
+
+    maxIter = 200
+    alpha = 0.8
+    tol = 1e-6
+    Tbasx, Tbasy, Tbasz, Jinv2 = Distort.inv_flow(grid[:,0], grid[:,1], grid[:,2], C, a1, b1, a2, b2, a3, b3, maxIter, alpha, tol)
+    distortedGrid = np.hstack((Tbasx.reshape(-1,1), Tbasy.reshape(-1,1), Tbasz.reshape(-1,1)))
     
     ngrid, nbas = np.prod(nmesh), np.prod(basMesh)
     Lx, Ly, Lz = b1-a1, b2-a2, b3-a3
-    w, dxbas = cell.vol/ngrid, (cell.vol/nbas)
+    w, wbas = cell.vol/ngrid, (cell.vol/nbas)
     G = get_Gv(nmesh, cell)
     G2 = np.einsum('gi,gi->g', G, G)
 
-    #print(C.shape)
-    #T1, T2, T3, J = Distort.flow(grid[:,0], grid[:,1], grid[:,2], C, a1,b1,a2,b2,a3,b3)
-    #distortedGrid = np.hstack((T1.reshape(-1,1), T2.reshape(-1,1), T3.reshape(-1,1)))
-    J = np.ones((ngrid,))/cell.vol*w
-    distortedGrid = 1.*grid
-
-    #for i in range(1):
-    #    fig, ax = plt.subplots()
-    #    ax.scatter(T2[i*100:(i+1)*100],T3[i*100:(i+1)*100])
-    #    plt.show()
-
-    #orbs = getOrbs(basgrid[:10], distortedGrid, J/w*cell.vol, dxbas, dybas, dzbas, Lx, Ly, Lz)
-    #orbs2 = getOrbsSlow(basgrid[:10], distortedGrid, J/w*cell.vol, dxbas, dybas, dzbas, Lx, Ly, Lz)
-
-    #'''
-    #S = np.dot(orbs, orbs.T)*w
-    #print(np.max(abs(S - np.eye(10))))
-
-    '''
-    import pdb
-    pdb.set_trace()
-    orbs1 = getOrbs(basgrid[:10], grid, np.ones((ngrid,)), dxbas, dybas, dzbas, Lx, Ly, Lz)
-    S1 = np.dot(orbs1, orbs1.T)*w
-    print(np.max(abs(S1 - np.eye(10))))
-    orbs2 = getOrbsSlow(basgrid[:10], grid, np.ones((ngrid,)), dxbas, dybas, dzbas, Lx, Ly, Lz)
-    S2 = np.dot(orbs2, orbs2.T)*w
-    print(np.max(abs(S2 - np.eye(10))))
-    pdb.set_trace()
-    '''
-    #maxIter = 1000 # maximum number of iterations
-    #alpha = 0.8 # mixing parameter
-    #tol = 1e-12 # convergence tolerance
-    #S1,S2,S3,_ = Distort.inv_flow(grid[:,0],grid[:,1],grid[:,2],C,a1,b1,a2,b2,a3,b3,maxIter,alpha,tol)
+    t0 = time.time()
     #import pdb
     #pdb.set_trace()
-    #'''
+    #TT = Distort2.flow_vmap(distortedGrid+1e-6, C, a1,b1,a2,b2,a3,b3)
 
-    nx = nmesh[0]
-    orbx = np.zeros((nx,))
-    gridx = 1.*grid[:nx,2]
-    import pdb
-    pdb.set_trace()
-    baspt = 0.
-    LindseyVals( (gridx-baspt)/dxbas, nx, orbx)
-    #orbx = getOrbVal( (gridx-baspt)/dxbas, Lx/dxbas)
-    LindseyVals( (gridx-baspt+Lx)/dxbas, nx, orbx)
-    LindseyVals( (gridx-baspt-Lx)/dxbas, nx, orbx)
-    
-    plt.plot(gridx, orbx)
-    plt.show()
-    print(orbx.dot(orbx.T) * (w**(1./3.))/dxbas)
-    import pdb
-    pdb.set_trace()
-    
-    #orbs = getOrbs(basgrid, distortedGrid, J/w*cell.vol, dxbas, dybas, dzbas, Lx, Ly, Lz)
-    orbs = getOrbs(basgrid, grid, np.ones((ngrid,)), dxbas, dybas, dzbas, Lx, Ly, Lz)
-    #orbs = getOrbs(basgrid, distortedGrid, J/w*cell.vol, dxbas, dybas, dzbas, Lx, Ly, Lz)
-    S = np.dot(orbs, orbs.T)*w
-    print("ovlp error ", np.max(abs(S - np.eye(basgrid.shape[0]))))
-    #orbs2 = getOrbsSlow(basgrid, distortedGrid, J/w*cell.vol, dxbas, dybas, dzbas, Lx, Ly, Lz)
+    Tdel = jacfwd(lambda grid : Distort2.flow(grid,C, a1,b1,a2,b2,a3,b3))
+    Jac = vmap(Tdel, in_axes=(0))(distortedGrid+1e-6)
+    print(time.time()-t0)
 
-    import pdb
-    pdb.set_trace()
-    #orbs3 = np.fromfile("orbs.tmp").reshape(nbas, ngrid)
-    #J = np.fromfile("Jacobian.tmp").reshape(ngrid)
-    #S = np.dot(orbs, orbs.T)*w
-    #print(np.max(abs(S - np.eye(basgrid.shape[0]))))
+    JacGrad = Jac[:,3]  #Del |J|
+    Jac = Jac[:,:3]     #J
+    Jacinv = np.asarray([np.linalg.inv(Ji) for Ji in Jac])      #J
+    JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
+
+    nucPos = np.asarray([cell._env[cell._atm[i,1]:cell._atm[i,1]+3] for i in range(cell._atm.shape[0])])
+
+    orbvalCardinal          = np.eye(nbas, dtype=complex) 
+    orbval                  = np.exp(-1.j*np.einsum('ai,gi->ga', grid, G))
+    orbDerivValG            = np.einsum('ag,gi->agi', orbval, 1.j*G)
+    orbDerivValCardinal     = np.zeros((nbas, nbas, 3), dtype=complex)
+
+    for i in range(nbas):
+        orbDerivValCardinal[i,:,0] = np.fft.ifftn(orbDerivValG[i,:,0].reshape(nmesh)).flatten()
+        orbDerivValCardinal[i,:,1] = np.fft.ifftn(orbDerivValG[i,:,1].reshape(nmesh)).flatten()
+        orbDerivValCardinal[i,:,2] = np.fft.ifftn(orbDerivValG[i,:,2].reshape(nmesh)).flatten()
     
-    KE = getKinetic(orbs, G2, nmesh, w).real/cell.vol
-    SF = cell.get_SI()
+    orbDerivValCardinal =  np.einsum('bji,abj->abi', Jac, orbDerivValCardinal) 
+
+    KE = np.einsum('axi,bxi,x->ab', orbDerivValCardinal.conj(), orbDerivValCardinal, 1./JacDet)/2.
+    KE = np.einsum('a,ab,b->ab', JacDet**0.5, KE, JacDet**0.5)
+
+    vpot = getNuclearPot(distortedGrid, nucPos, cell._atm[:,0]) 
+
+    Vne = np.diag(vpot)
+    ##solve eigenvalue problem
+    print(np.linalg.eigh(KE+Vne)[0][:10])
+
+
+
+    alpha = 1.6
+
+    ## solve poisson's equation
+    grid2 = np.einsum('gi,gi->g', distortedGrid, distortedGrid)
+    fval = np.exp(-grid2*alpha)
+
+    [dke, vke] = np.linalg.eigh(2.*KE)
+    L = 3.
+    g2 = 1.*G2
+    g2.sort()
+    Vtrunc = 0.*dke
+    #Vtrunc[1:] = 4.*np.pi/dke[1:]
+
+    Vtrunc[1:] = 8.*np.pi*(np.sin(L*dke[1:]**0.5/2))**2/dke[1:]
+    Vtrunc[0] = 8.*np.pi*(L/2)**2
+    V = np.dot(vke, np.einsum('a,ab->ab', Vtrunc, vke.conj().T))
+    V2e = np.einsum('a,ab,b->ab', 1./JacDet**0.5, V, 1./JacDet**0.5)
+    potx = np.dot(V2e, fval)
     
+    print("pot energy ", np.sum(fval.conj()*potx) * cell.vol/nbas)
+
+    V2e = np.einsum('a,ab,b->ab', JacDet**0.5, V, JacDet**0.5)
+
+    ###Potential
     '''
-    ao = cell.pbc_eval_gto('GTOval', grid).T
-    S2 = ao.T.dot(ao) * w
-    S = cell.pbc_intor('cint1e_ovlp_sph')
+    potG = 2.*np.sin(L*G2**0.5/2)**2/G2
+    potG[0] = L**2/2
+    #potG = 1./G2
+    #potG[0] = 0.
+    potG *= 4.*np.pi
     
-    K = getKinetic(ao, G2, nmesh, w).real/cell.vol
-    N = getNuclear(ao, np.dot(-cell.atom_charges(), SF), G2, nmesh, w)
-    import pdb
-    pdb.set_trace()
-    [d,mo] = scipy.linalg.eigh(K+N, S)
-    mydf = pyscf.pbc.df.FFTDF(cell)
-    eri = mydf.get_eri()    
-    rdm = 2.*np.dot(mo[:,:nelec//2], mo[:,:nelec//2].T.conj())
-    print(np.sum(rdm, N), np.sum(rdm, K))
+    grid2 = np.einsum('gi,gi->g', grid, grid)
+    fval = np.exp(-grid2*alpha)
+    fpot = np.fft.ifftn( (potG * np.fft.fftn(fval.reshape(nmesh)).flatten()).reshape(nmesh)).flatten()
+    print("potential ", np.einsum('g,g', fpot.conj(), fval) * (cell.vol/nbas), (np.pi/2./alpha)**1.5 * (2*np.pi/0.5/alpha))
     '''
 
-    Nuc = getNuclear(orbs, np.dot(-cell.atom_charges(), SF), G2, nmesh, w).real
-    V2e = getV2e(orbs, G2, nmesh, J*cell.vol/w, w).real/dxbas/cell.vol
-    #Nuc = getNuclear(orbs, np.ones((ngrid,)), G2, nmesh, w)
-    [d,v] = np.linalg.eigh(KE+Nuc)
-    print(d[:5])
-
-
-    '''    
-    ao = cell.pbc_eval_gto('GTOval', grid)
-    mydf = pyscf.pbc.df.FFTDF(cell)
-    eri = mydf.get_eri()    
-    
-    ao2G = (1.+0.j)*ao[:,1]*ao[:,1]
-    ao2G = np.fft.fftn(ao2G.reshape(nmesh)).flatten()*w
-    G2[0] = 1.
-    potG = np.pi*4./G2
-    potG[0] = 0.
-    eri2 = np.sum(ao2G * potG * ao2G.conj())/cell.vol
-    import pdb
-    pdb.set_trace()
-    '''
     dc = FDiisContext(5)
 
-    CoreH, nelec, nucPot = Nuc+KE, cell.nelectron, cell.energy_nuc()
-    print(nucPot, "nuclear pot")
+    CoreH, nelec, nucPot = Vne+KE, cell.nelectron, 0. #cell.energy_nuc()
+
     Fock = 1.*CoreH
     ##SCF
     for it in range(20):
         e, orbs = np.linalg.eigh(Fock)
         rdm = 2.*np.dot(orbs[:,:nelec//2], orbs[:,:nelec//2].T.conj())
         
-        j, k = makeJK(rdm, V2e, 1.) 
+        j, k = makeJK(rdm, V2e, nbas/cell.vol) 
         Fock = j -0.5*k + CoreH
 
         OrbGrad = get_grad(orbs, nelec, Fock)
@@ -268,15 +265,9 @@ def HF(cell, basMesh, nmesh, mf):
         Energy = np.einsum('ij,ji', (0.5*j-0.25*k+CoreH), rdm) + nucPot 
         print("{0:3d}   {1:15.8f}  {2:15.8f}".format(it, Energy.real, fOrbGrad), e[0] )
         if (fOrbGrad < 1.e-5):
-           #print(2.*np.einsum('ia,ij,ja->a', orbs[:,:nelec//2], Nuc, orbs[:,:nelec//2]))
-           #print(2.*np.einsum('ia,ij,ja->a', orbs[:,:nelec//2], KE, orbs[:,:nelec//2]))
-           #print(np.einsum('ia,ij,ja->a', orbs[:,:nelec//2], j, orbs[:,:nelec//2]))
-           #print(np.einsum('ia,ij,ja->a', orbs[:,:nelec//2], k, orbs[:,:nelec//2]))
            break
 
         Fock, OrbGrad, c0 = dc.Apply(Fock, OrbGrad)
         
     return Energy.real , orbs[:,:nelec//2].T   
 
-    
-    
