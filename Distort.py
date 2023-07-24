@@ -1,41 +1,48 @@
 import os
-import numpy as np
+import numpy as jnp
 import matplotlib.pyplot as plt
-from jax import lax
+from jax import lax, jit
+from jax import numpy as jnp
+os.environ['JAX_PLATFORM_NAME'] = 'cpu'
+os.environ['JAX_ENABLE_X64'] = 'True'
 
+@jit
 def chebfit(F,g1,g2,g3,S):
-  c = np.einsum('ijk,ia->ajk',F,g1)
-  c = np.einsum('ijk,jb->ibk',c,g2)
-  c = np.einsum('ijk,kc->ijc',c,g3) / S
+  c = jnp.einsum('ijk,ia->ajk',F,g1)
+  c = jnp.einsum('ijk,jb->ibk',c,g2)
+  c = jnp.einsum('ijk,kc->ijc',c,g3) / S
   return c
 
+#@jit
 def gfun(x,a,b,nb):
   nx = x.shape[0]
-  xc = np.clip(x,a,b)
-  u = np.reshape( 2*(xc - (a+b)/2)/(b-a), (nx,1) )
-  n = np.reshape( np.arange(nb), (1,nb) )
-  g = np.cos(n*np.arccos(u))
+  xc = jnp.clip(x,a,b)
+  u = jnp.reshape( 2*(xc - (a+b)/2)/(b-a), (nx,1) )
+  n = jnp.reshape( jnp.arange(nb), (1,nb) )
+  g = jnp.cos(n*jnp.arccos(u))
   return g
 
+#@jit
 def Gtildefun(x,a,b,nb):
 
   nx = x.shape[0]
-  u = np.reshape( 2*(x - (a+b)/2)/(b-a), (nx,1) )
+  u = jnp.reshape( 2*(x - (a+b)/2)/(b-a), (nx,1) )
   G0 = u
   G1 = u**2/2
 
   g = gfun(x,a,b,nb+1)
   gplus = g[:,3:nb+1]
   gminus = g[:,1:nb-1]
-  nvec = np.reshape(np.arange(2,nb),(1,nb-2))
+  nvec = jnp.reshape(jnp.arange(2,nb),(1,nb-2))
   G2 = gplus/(2*(nvec+1)) - gminus/(2*(nvec-1))
 
-  G = np.hstack((G0,G1,G2))
+  G = jnp.hstack((G0,G1,G2))
   return G
 
+#@jit
 def Gfun(x,a,b,nb):
   Gtilde = Gtildefun(x,a,b,nb)
-  Gtilde0 = Gtildefun(a*np.ones(1),a,b,nb)
+  Gtilde0 = Gtildefun(a*jnp.ones(1),a,b,nb)
   G = (b-a)*(Gtilde - Gtilde0)/2
   return G
 
@@ -49,11 +56,11 @@ def knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
   nb1 = c.shape[0]
   nb2 = c.shape[1]
   nb3 = c.shape[2]
-  m1 = np.ravel( Gfun(b1*np.ones(1),a1,b1,nb1) )
-  m2 = np.ravel( Gfun(b2*np.ones(1),a2,b2,nb2) )
-  m3 = np.ravel( Gfun(b3*np.ones(1),a3,b3,nb3) )
+  m1 = jnp.ravel( Gfun(b1*jnp.ones(1),a1,b1,nb1) )
+  m2 = jnp.ravel( Gfun(b2*jnp.ones(1),a2,b2,nb2) )
+  m3 = jnp.ravel( Gfun(b3*jnp.ones(1),a3,b3,nb3) )
 
-  M = np.einsum('abc,a,b,c',c,m1,m2,m3)
+  M = jnp.einsum('abc,a,b,c',c,m1,m2,m3)
   cc = c/M
 
   g1 = gfun(x1,a1,b1,nb1)
@@ -63,33 +70,35 @@ def knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
   G2 = Gfun(x2,a2,b2,nb2)
   G3 = Gfun(x3,a3,b3,nb3)
 
-  rho1 = np.einsum('abc,ia,b,c->i',cc,g1,m2,m3)
-  rho2 = np.einsum('abc,ia,ib,c->i',cc,g1,g2,m3)
-  rho = np.einsum('abc,ia,ib,ic->i',cc,g1,g2,g3)
+  rho1 = jnp.einsum('abc,ia,b,c->i',cc,g1,m2,m3)
+  rho2 = jnp.einsum('abc,ia,ib,c->i',cc,g1,g2,m3)
+  rho = jnp.einsum('abc,ia,ib,ic->i',cc,g1,g2,g3)
 
-  T1 = a1 + L1*np.einsum('abc,ia,b,c->i',cc,G1,m2,m3)
-  T2 = a2 + L2*np.einsum('abc,ia,ib,c->i',cc,g1,G2,m3)/rho1
-  T3 = a3 + L3*np.einsum('abc,ia,ib,ic->i',cc,g1,g2,G3)/rho2
+  T1 = a1 + L1*jnp.einsum('abc,ia,b,c->i',cc,G1,m2,m3)
+  T2 = a2 + L2*jnp.einsum('abc,ia,ib,c->i',cc,g1,G2,m3)/rho1
+  T3 = a3 + L3*jnp.einsum('abc,ia,ib,ic->i',cc,g1,g2,G3)/rho2
 
   return T1,T2,T3,rho
 
+#@jit
 def flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3):
   N = C.shape[3]
   T1 = x1
   T2 = x2
   T3 = x3
   p = x1.shape[0]
-  J = np.ones(p)/p
+  J = jnp.ones(p)/p
   for n in range(N):
     c = C[:,:,:,n]
-    if np.mod(n,3)==0:
+    if jnp.mod(n,3)==0:
       T1,T2,T3,rhofac = knothe3dcheb(T1,T2,T3,a1,b1,a2,b2,a3,b3,c)
-    elif np.mod(n,3)==1:
-      T3,T1,T2,rhofac = knothe3dcheb(T3,T1,T2,a3,b3,a1,b1,a2,b2,np.transpose(c,(2,0,1)))
+    elif jnp.mod(n,3)==1:
+      T3,T1,T2,rhofac = knothe3dcheb(T3,T1,T2,a3,b3,a1,b1,a2,b2,jnp.transpose(c,(2,0,1)))
     else:
-      T2,T3,T1,rhofac = knothe3dcheb(T2,T3,T1,a2,b2,a3,b3,a1,b1,np.transpose(c,(1,2,0)))
+      T2,T3,T1,rhofac = knothe3dcheb(T2,T3,T1,a2,b2,a3,b3,a1,b1,jnp.transpose(c,(1,2,0)))
     J = J * rhofac
-    J = J / np.sum(J)
+    #print(n, T1, T2, T3, J, rhofac)
+  #J = J / jnp.sum(J)
   return T1,T2,T3,J
 
 def create_cond_and_body(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
@@ -106,9 +115,9 @@ def create_cond_and_body(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
   #@jit
   def cond_fun(carry):
     x1,x2,x3,T1,T2,T3,rho,iter = carry
-    relErr1 = np.max(np.abs(T1-y1))/(b1-a1)
-    relErr2 = np.max(np.abs(T2-y2))/(b2-a2)
-    relErr3 = np.max(np.abs(T3-y3))/(b3-a3)
+    relErr1 = jnp.max(jnp.abs(T1-y1))/(b1-a1)
+    relErr2 = jnp.max(jnp.abs(T2-y2))/(b2-a2)
+    relErr3 = jnp.max(jnp.abs(T3-y3))/(b3-a3)
     cond1 = relErr1 > tol
     cond2 = relErr2 > tol
     cond3 = relErr3 > tol
@@ -133,17 +142,17 @@ def inv_flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,maxIter,alpha,tol):
   T3 = x3
   N = C.shape[3]
   p = x1.shape[0]
-  Jinv = np.ones(p)/p
+  Jinv = jnp.ones(p)/p
   for n in range(N):
     c = C[:,:,:,N-n-1]
-    if np.mod(N-n-1,3)==0:
+    if jnp.mod(N-n-1,3)==0:
       T1,T2,T3,rhoinvfac,_ = inv_knothe3dcheb(T1,T2,T3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol)
-    elif np.mod(N-n-1,3)==1:
-      T3,T1,T2,rhoinvfac,_ = inv_knothe3dcheb(T3,T1,T2,a3,b3,a1,b1,a2,b2,np.transpose(c,(2,0,1)),maxIter,alpha,tol)
+    elif jnp.mod(N-n-1,3)==1:
+      T3,T1,T2,rhoinvfac,_ = inv_knothe3dcheb(T3,T1,T2,a3,b3,a1,b1,a2,b2,jnp.transpose(c,(2,0,1)),maxIter,alpha,tol)
     else:
-      T2,T3,T1,rhoinvfac,_ = inv_knothe3dcheb(T2,T3,T1,a2,b2,a3,b3,a1,b1,np.transpose(c,(1,2,0)),maxIter,alpha,tol)
+      T2,T3,T1,rhoinvfac,_ = inv_knothe3dcheb(T2,T3,T1,a2,b2,a3,b3,a1,b1,jnp.transpose(c,(1,2,0)),maxIter,alpha,tol)
     Jinv = Jinv * rhoinvfac
-    Jinv = Jinv / np.sum(Jinv)
+    Jinv = Jinv / jnp.sum(Jinv)
   return T1,T2,T3,Jinv
 
 
@@ -170,30 +179,30 @@ if __name__ == '__main__':
     tol = 1e-12 # convergence tolerance
 
     # plotting grid size
-    np1 = 20
-    np2 = 25
+    jnp1 = 20
+    jnp2 = 25
 
     # z coordinate
     z = -0.0
 
 
     # plotting grid size
-    np1 = 20
-    np2 = 25
+    jnp1 = 20
+    jnp2 = 25
 
     # z coordinate
     z = -1
 
     # define uniform plotting grid
-    xp1 = np.linspace(a1,b1,np1)
-    xp2 = np.linspace(a2,b2,np2)
-    X1 = np.repeat(np.reshape(xp1,(np1,1)),np2,axis=1)
-    X2 = np.repeat(np.reshape(xp2,(1,np2)),np1,axis=0)
-    Xp1 = np.reshape(X1,np1*np2)
-    Xp2 = np.reshape(X2,np1*np2)
-    Xp3 = z*np.ones(np1*np2)
+    xp1 = jnp.linspace(a1,b1,jnp1)
+    xp2 = jnp.linspace(a2,b2,jnp2)
+    X1 = jnp.repeat(jnp.reshape(xp1,(jnp1,1)),jnp2,axis=1)
+    X2 = jnp.repeat(jnp.reshape(xp2,(1,jnp2)),jnp1,axis=0)
+    Xp1 = jnp.reshape(X1,jnp1*jnp2)
+    Xp2 = jnp.reshape(X2,jnp1*jnp2)
+    Xp3 = z*jnp.ones(jnp1*jnp2)
 
-    C = np.fromfile("cheb.bin", dtype=np.float64).reshape(nb1, nb2, nb3, -1)
+    C = jnp.fromfile("cheb.bin", dtype=jnp.float64).reshape(nb1, nb2, nb3, -1)
     # compute forward and inverse transport of uniform grid 
     T1,T2,T3,J = flow(Xp1,Xp2,Xp3,C,a1,b1,a2,b2,a3,b3)
 
