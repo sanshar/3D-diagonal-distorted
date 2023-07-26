@@ -34,6 +34,8 @@ def PadZeroForInterpolation2d(freqVal, nmesh, nDenseMesh):
     return freqValDense
 
 def PadZeroForInterpolation3d(freqVal, nmesh, nDenseMesh):
+    if nmesh[0] > nDenseMesh[0] or nmesh[1] > nDenseMesh[1] or nmesh[2] > nDenseMesh[2] :
+        return freqVal
     freqVal = np.roll(freqVal, ((nmesh[0]+1)//2, (nmesh[1]+1)//2, (nmesh[2]+1)//2), axis=(0,1,2) )
     freqValDense = np.zeros(nDenseMesh, dtype=complex)
     freqValDense[0:nmesh[0],0:nmesh[1],0:nmesh[2]] = freqVal

@@ -6,7 +6,7 @@ from jax import numpy as jnp
 os.environ['JAX_PLATFORM_NAME'] = 'cpu'
 os.environ['JAX_ENABLE_X64'] = 'True'
 
-@jit
+#@jit
 def chebfit(F,g1,g2,g3,S):
   c = jnp.einsum('ijk,ia->ajk',F,g1)
   c = jnp.einsum('ijk,jb->ibk',c,g2)
@@ -47,7 +47,7 @@ def Gfun(x,a,b,nb):
   return G
 
 # define Knothe transport function
-#@jit
+@jit
 def knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
 
   L1 = b1-a1
@@ -126,6 +126,7 @@ def create_cond_and_body(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
 
   return body_fun, cond_fun
 
+#@jit
 def inv_knothe3dcheb(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
   body_fun, cond_fun = create_cond_and_body(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol)
   x1 = y1
@@ -136,6 +137,7 @@ def inv_knothe3dcheb(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
   x1,x2,x3,T1,T2,T3,rho,iter = lax.while_loop(cond_fun, body_fun, init_val)
   return x1,x2,x3,1/rho,iter
 
+#@jit
 def inv_flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,maxIter,alpha,tol):
   T1 = x1
   T2 = x2
