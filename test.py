@@ -1,18 +1,19 @@
 from pyscf.pbc import gto as pgto
 from pyscf.pbc import df as pdf
 from pyscf import gto
-import numpy, pyscf, HF, scipy, HF2, HF3, HF4, Distort, Distort2, scipy, HFdirect, temp
+import numpy, pyscf, HF, scipy, HF2, HF3, HF4, Distort, Distort2, scipy, HFdirect, temp, Distort3
 import numpy as np
-from jax import grad, jit, vmap, jacfwd, jacrev
 from pyscf.pbc import pwscf
+
 
 for nG in range(8,60,2):
     cell = pgto.M(
         a = 10*numpy.eye(3),
-        atom = '''He 5. 5. 5.''',
+        atom = '''He 5.5 5.5 5.5''',
                 #H    4.6 4.6 4.6''',#+gh,
         #atom = '''H 0.0 0.0 0.0''',
-        basis = "unc-gth-qzv3p",
+        #basis = "unc-gth-qzv3p",
+        basis = "unc-gth-dzvp",
         pseudo = "gth-pade",
         verbose = 3,
         mesh = [nG, nG, nG],
@@ -21,18 +22,34 @@ for nG in range(8,60,2):
         unit='B'
     )          
 
-
     mf = pyscf.pbc.scf.RHF(cell).density_fit(auxbasis='weigend')
-    #mf.init_guess = '1e'
-    mf.kernel()
+    #mf.kernel()
 
+    K1 = cell.pbc_intor('cint1e_kin_sph')
+    S1 = cell.pbc_intor('cint1e_ovlp_sph')
+    N1 = mf.with_df.get_nuc()
+    N2 = mf.with_df.get_pp()
+
+    #print(S1.diagonal()[:5])
+    #print(K1.diagonal()[:5])
+    #print(N2.diagonal()[:5])
+    #print(N1.diagonal()[:5])
+    
     mf = pyscf.scf.RHF(cell).density_fit(auxbasis='weigend')
     #mf.init_guess = '1e'
-    mf.kernel()
+    #mf.kernel()
 
-    print("\n\n", cell.mesh)
+    #print("\n\n", cell.mesh)
     mf = pwscf.KRHF(cell, cell.make_kpts([1,1,1]))
-    mf.kernel()
+    #mf.kernel()
+
+    #invFlow, JacAllFun = Distort3.returnFunc(cell)
+    #HFdirect.HFExact(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, productGrid=False)
+    print(cell.mesh)
+    invFlow, JacAllFun = Distort3.returnFunc2(cell)
+    HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, productGrid=True)
+    #HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, productGrid=True)
+
     #continue
 
     '''
@@ -80,7 +97,6 @@ for nG in range(8,60,2):
 
     #print(KE)
     #mf.kernel()
-    HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf)
 
 exit(0)
 
