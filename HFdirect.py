@@ -53,7 +53,51 @@ def getNuclearPotDenseGrid(denseMesh, nbas, nucPos, Z, invflow, flowJac, cell, p
     cell.mesh = nmesh
     return nucPot
     
+def getNuclearPotDenseGridNoDiagonal(denseMesh, nbas, nucPos, Z, invflow, flowJac, cell, productGrid = False, distortedGrid = None, JacAll=None):
+    a1,b1,a2,b2,a3,b3 = 0.,cell.a[0,0],0.,cell.a[1,1],0.,cell.a[2,2]
+    grid = cell.get_uniform_grids(denseMesh)
+    if (not productGrid):
+        distortedGrid = invflow(grid)
+    else:
+        distortedGrid = invflow(denseMesh)
 
+    if (not productGrid):
+        JacAll = flowJac(distortedGrid+1.e-6)
+    else:
+        JacAll = flowJac(denseMesh)
+
+    Jac = JacAll[:,:3]     #J
+    JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac]) 
+    
+    nmesh = cell.mesh
+    cell.mesh = denseMesh
+    SI = cell.get_SI()
+    Gv = cell.get_Gv(denseMesh)
+    vpplocG = pyscf.pbc.gto.pseudo.get_vlocG(cell, Gv)
+    vpplocG = -numpy.einsum('ij,ij->j', SI, vpplocG)
+
+    gridfft = np.array(distortedGrid*2*np.pi/cell.a[0,0], dtype='float64')
+    nucPot1 = finufft.nufft3d2(1.*gridfft[:,0], 1.*gridfft[:,1], 1.*gridfft[:,2], vpplocG.reshape(denseMesh),modeord=1,isign=1).real
+
+
+    orbVal = np.zeros((nbas,np.prod(denseMesh)), dtype=complex)
+
+    for i in range(nbas):
+        orbvali = np.zeros((nbas,), dtype=complex)
+        orbvali[i] = 1.
+        orbVal[i] = np.fft.ifftn(FFTInterpolation.PadZeroForInterpolation3d(np.fft.fftn(orbvali.reshape(nmesh)), nmesh, denseMesh)).flatten() * (np.prod(denseMesh)/np.prod(nmesh))**0.5
+
+    ##nuclear operator
+    nucPot = orbVal.conj().dot(np.einsum('ar,r->ar', orbVal, nucPot1).T)
+    nucPot = nucPot.real/cell.vol
+
+
+    ##overlap matrix
+    S = orbVal.conj().dot(orbVal.T)
+
+    cell.mesh = nmesh
+    return nucPot
+    
 def getNuclearKineticDenseGrid(denseMesh, nbas, nucPos, Z, invflow, flowJac, cell, productGrid = False, distortedGrid = None, JacAll=None):
     a1,b1,a2,b2,a3,b3 = 0.,cell.a[0,0],0.,cell.a[1,1],0.,cell.a[2,2]
     grid = cell.get_uniform_grids(denseMesh)
@@ -358,16 +402,184 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 
     v0 = 1./JacDet**0.5
     v0 = v0/np.linalg.norm(v0)
 
-    '''
-    KE = np.zeros((nbas,nbas),dtype=complex)
-    for i in range(nbas):
-        bas = np.zeros((nbas,), dtype=complex)
-        bas[i] = 1.
-        KE[i] = Hv2(bas, JacDet, Jac, basMesh, G)
+    
+    nucPos = np.asarray([cell._env[cell._atm[i,1]:cell._atm[i,1]+3] for i in range(cell._atm.shape[0])])
 
-    import pdb
-    pdb.set_trace()
+
+    #denseMesh = nmesh #[46,46,46]
+    #nucPot = getNuclearPotDenseGrid(denseMesh, nbas, nucPos, cell._atm[:,0], \
+    #    invFlow, vmap(Tdel, in_axes=(0)), cell, distortedGrid, JacAll) * JacDet**0.5
+
+    nGnuc = 2*nmesh[0]
+    denseMesh = [max(nGnuc,nmesh[0]),max(nGnuc,nmesh[0]),max(nGnuc,nmesh[0])]#[12,12,12]
+    nucPot = getNuclearPotDenseGrid(denseMesh, nbas, nucPos, cell._atm[:,0], \
+        invFlow, JacAllFun, cell, productGrid) * JacDet**0.5
+    #nucPot = getNuclearPotDenseGridNoDiagonal(denseMesh, nbas, nucPos, cell._atm[:,0], \
+    #    invFlow, JacAllFun, cell, productGrid) 
+
+    
+    v0 = 1./JacDet**0.5
+    v0 = v0/np.linalg.norm(v0)
+    def V2e(vec, guess, tol=1.e-10):
+        vec2 = vec*JacDet**0.5
+        
+        vec2 = vec2 - vec2.dot(v0) * v0
+        #pot = scipy.sparse.linalg.cg(Hvop2, vec2, x0=guess, M=preCond, callback=printNorm, tol = tol**0.5/np.linalg.norm(vec2), atol=tol**0.5)
+        pot = scipy.sparse.linalg.cg(Hvop2, vec2, x0=guess, M=preCond, tol = tol**0.5/np.linalg.norm(vec2), atol=tol**0.5)
+
+        potout = pot[0] - pot[0].dot(v0) * v0
+
+        #error = Hv2(potout, JacDet, Jac, basMesh, G) - vec2
+        #print("final error ", np.linalg.norm(error))
+        
+        potout = potout * JacDet**0.5
+        return potout.real * 4. * np.pi 
+        
+    #i = 0
+    #def hv(v):
+    #    return nucPot*v + Hv2(v, JacDet, Jac, basMesh, G)/2.
+    #Ham   = LinearOperator((nbas, nbas), matvec = hv )        
+    #(w,v) = eigsh(Ham, 1, which = 'SA')
+    
+    #print(w[0], cell.energy_nuc())
+    
+    nelec, nuclearPotential = cell.nelectron, cell.energy_nuc()
+    
+    def FC(C, J):
+        C = np.asarray(C)
+        Cout = 0.*np.asarray(C)
+
+        if (len(C.shape) == 2 ):
+            for i in range(C.shape[0]):
+                Cout[i] = (J+nucPot)*C[i] + Hv2(C[i], JacDet, Jac, basMesh, G).real/2. 
+                #Cout[i] = (J)*C[i] + nucPot.dot(C[i]) + Hv2(C[i], JacDet, Jac, basMesh, G).real/2. 
+            return Cout
+
+        else :
+            return (J+nucPot)*C + Hv2(C, JacDet, Jac, basMesh, G).real/2.         
+    
+    def precond(x, e0):
+        return Condition(x, G2/2, basMesh, e0)
+    
+    Ck = np.random.random((nelec//2,nbas))
+    #conv, e, x0 = Davidson.davidson1(lambda C : FC(C, 0.*G2), Ck, precond, nroots=nelec//2, verbose=0)
+    #print(basMesh, conv, e)
+
+    conv, e, orbs = Davidson.davidson1(lambda C : FC(C, 0.*G2), Ck, precond, nroots=nelec//2, verbose=0, tol=1e-3)
+    orbs = np.asarray(orbs)
+    
+    density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
+
+    davidsonTol = 1.e-3 
+    j = V2e(density.real, 0.*G2, davidsonTol) * nbas/cell.vol
+    Ho = FC(orbs, j/2.)
+    Energy = 2.*np.einsum('ig,ig', orbs, Ho)  + nuclearPotential
+
+
+    #dc = FDiisContext(10)
+
+    from pyscf.lib.diis import DIIS    
+    dc = DIIS()
+    dc.space = 10
+    
+    '''  
+    ##SCF
+    for it in range(40):
+        conv, e, orbs = Davidson.davidson1(lambda C : FC(C, j), orbs, precond, nroots=nelec//2, verbose=1, tol=davidsonTol)
+        orbs = np.asarray(orbs)
+        
+        oldDensity = 1.*density
+        density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
+        error = density - oldDensity
+        
+        #density = dc.Apply(density, error)[0]
+        density = dc.update(density, error)
+        
+        oldE = Energy
+        Ho = FC(orbs, j/2.)
+        Energy = 2.*np.einsum('ig,ig', orbs.conj(), Ho).real  + nuclearPotential
+        errorNorm = np.linalg.norm(error)
+        de = abs(Energy - oldE).real
+        davidsonTol = min(davidsonTol, 0.001*de)
+        
+        print("{0:3d}   {1:15.8f}  {2:15.8f}  {3:15.8f}".format(it, Energy.real, errorNorm, de) )
+        if (errorNorm < 1.e-5 and de < 1.e-8):
+            print(errorNorm, de)
+            break
+
+        j = V2e(density, j/(nbas/cell.vol)/4./np.pi, davidsonTol)* nbas/cell.vol
+
+
+    ##SCF
     '''
+    t0 = time.time()
+    for it in range(80):
+        conv, e, orbs = Davidson.davidson1(lambda C : FC(C, j), orbs, precond, nroots=nelec//2, verbose=0, tol=davidsonTol)
+        #orbs, e, iter, maxerror = Davidson.Davidson(lambda C : FC(C, j), precond, Ck)
+        orbs = np.asarray(orbs)
+        
+        density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
+        oldj = 1.*j
+        j = V2e(density, j/(nbas/cell.vol)/4./np.pi, max(1.e-10,davidsonTol)) * nbas/cell.vol
+        
+        error = j - oldj
+        
+        oldE = Energy
+        Ho = FC(orbs, j/2.)
+        Energy = 2.*np.einsum('ig,ig', orbs, Ho)  + nuclearPotential
+        errorNorm = np.linalg.norm(error/JacDet**0.5) * (cell.vol/nbas)**0.5
+
+        de = abs(Energy - oldE).real
+        davidsonTol = max(1.e-10, min(davidsonTol, 0.001*de))
+
+        dt = time.time() - t0
+        print("{0:3d}   {1:15.8f}  {2:15.8f}  {3:15.8f}  {4:15.2f}".format(it, Energy.real, errorNorm, de, dt) )
+        if (de< 1.e-8 ):
+           break
+
+        #j = dc.Apply(j, error)[0]
+        j = dc.update(j, error)
+    #'''
+    return Energy.real , orbs 
+
+
+def HFCheck(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 1.e-6):
+    a1,b1,a2,b2,a3,b3 = 0.,cell.a[0,0],0.,cell.a[1,1],0.,cell.a[2,2]
+
+    grid = cell.get_uniform_grids(nmesh)
+    basgrid = cell.get_uniform_grids(basMesh)
+    
+
+    if (not productGrid):
+        distortedGrid = invFlow(grid)
+    else:
+        distortedGrid = invFlow(nmesh)
+    
+    ngrid, nbas = np.prod(nmesh), np.prod(basMesh)
+    G = get_Gv(nmesh, cell)
+    G2 = np.einsum('gi,gi->g', G, G)
+
+    t0 = time.time()
+
+
+    if (not productGrid):
+        JacAll = JacAllFun(distortedGrid)
+    else:
+        JacAll = JacAllFun(nmesh)
+        
+    Jac = JacAll[:,:3]     #J
+    JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
+
+    
+    from scipy.sparse.linalg import LinearOperator    
+    G2[0] = 1.
+    Hvop2   = LinearOperator((nbas, nbas), matvec = lambda v: Hv2(v, JacDet, Jac, basMesh, G))        
+    preCond = LinearOperator((nbas, nbas), matvec = lambda v: Condition(v, G2, basMesh))
+    printNorm = lambda v : print(np.linalg.norm(v))
+
+    v0 = 1./JacDet**0.5
+    v0 = v0/np.linalg.norm(v0)
+
     
     nucPos = np.asarray([cell._env[cell._atm[i,1]:cell._atm[i,1]+3] for i in range(cell._atm.shape[0])])
 
@@ -398,6 +610,68 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 
         potout = potout * JacDet**0.5
         return potout.real * 4. * np.pi 
         
+    import pdb
+    pdb.set_trace()
+    nelec, nuclearPotential = cell.nelectron, cell.energy_nuc()
+    moCoeff = mf.mo_coeff[:,:nelec//2]
+    ao = cell.pbc_eval_gto('GTOval', np.array(distortedGrid, dtype=np.float64))
+    mo = np.einsum('ab,ra,r->br', moCoeff, ao, 1./JacDet**0.5)
+
+    K1 = cell.pbc_intor('cint1e_kin_sph')
+    S1 = cell.pbc_intor('cint1e_ovlp_sph')
+    N1 = mf.with_df.get_pp()
+
+    se = mo.conj().dot(mo.T) * cell.vol/nbas
+    errorSe = se - (moCoeff.T.conj().dot(S1.dot(moCoeff)))
+    print("overlap \n")
+    print(se)
+    print(moCoeff.T.conj().dot(S1.dot(moCoeff)))
+
+
+    kmo = np.asarray([Hv2(moi, JacDet, Jac, basMesh, G)/2. for moi in mo])
+    ke = kmo.conj().dot(mo.T) * cell.vol/nbas
+    errorKe = ke - (moCoeff.T.conj().dot(K1.dot(moCoeff)))
+    print("kinetic \n")
+    print(ke)
+    print(moCoeff.T.conj().dot(K1.dot(moCoeff)))
+    print(ke.diagonal().sum(), (moCoeff.T.conj().dot(K1.dot(moCoeff))).diagonal().sum())
+
+    print("nuclear\n")
+    nuc =   np.einsum('ar,r,br', mo.conj(), nucPot, mo) * cell.vol/nbas
+    errorNuc = nuc - (moCoeff.T.conj().dot(N1.dot(moCoeff)))
+    print(nuc)
+    print((moCoeff.T.conj().dot(N1.dot(moCoeff))))
+    print(nuc.diagonal().sum(), (moCoeff.T.conj().dot(N1.dot(moCoeff))).diagonal().sum())
+
+
+    from pyscf.pbc import df
+    nao = cell.nao_nr()
+    kpts = cell.make_kpts([1,1,1])
+    mydf = df.DF(cell, kpts=kpts)
+    
+    for i, kpti in enumerate(kpts):
+        for j, kptj in enumerate(kpts):
+            eri_3d = []
+            for LpqR, LpqI, sign in mydf.sr_loop([kpti,kptj], compact=False):
+                eri_3d.append(LpqR+LpqI*1j)
+            eri_3d = numpy.vstack(eri_3d).reshape(-1,nao,nao)
+
+    
+    CoulExact = np.einsum('Fab,F->ab', eri_3d, np.einsum('Fab,ab->F', eri_3d, 2*moCoeff.conj().dot(moCoeff.T)))
+    JExact = moCoeff.T.conj().dot(CoulExact.dot(moCoeff))
+    
+    density = 2*np.einsum('ig,ig->g', mo, mo.conj())
+    Coul = V2e(density, 0.*density, tol=1.e-10) 
+    print("Coulomb\n")
+    J =   np.einsum('ar,r,br', mo.conj(), Coul, mo) * cell.vol/nbas
+    print(JExact)
+    print(J)
+    print(J.diagonal().sum(), JExact.diagonal().sum())
+
+    import pdb
+    pdb.set_trace()
+    exit(0)
+    #return
     #i = 0
     #def hv(v):
     #    return nucPot*v + Hv2(v, JacDet, Jac, basMesh, G)/2.
@@ -489,22 +763,20 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 
         oldE = Energy
         Ho = FC(orbs, j/2.)
         Energy = 2.*np.einsum('ig,ig', orbs, Ho)  + nuclearPotential
-        errorNorm = np.linalg.norm(error)
+        errorNorm = np.linalg.norm(error/JacDet**0.5) * (cell.vol/nbas)**0.5
 
         de = abs(Energy - oldE).real
         davidsonTol = max(1.e-10, min(davidsonTol, 0.001*de))
 
         dt = time.time() - t0
         print("{0:3d}   {1:15.8f}  {2:15.8f}  {3:15.8f}  {4:15.2f}".format(it, Energy.real, errorNorm, de, dt) )
-        if (errorNorm < 1.e-4 ):
+        if (de< 1.e-8 ):
            break
 
         #j = dc.Apply(j, error)[0]
         j = dc.update(j, error)
     #'''
     return Energy.real , orbs 
-
-
 
 ##NUCLEAR ENERGY IS CALCULATED EXACTLY
 def HFExact(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 1.e-6):
