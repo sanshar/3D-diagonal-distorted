@@ -364,6 +364,14 @@ def Hv(v, JacDet, orbDerivValCardinal):
     
     return Hv
 
+def Ex(orb, mo, V2e, dw):
+    nmo = mo.shape[0]  
+    orbOut = 0.*orb
+    for i in range(nmo):
+        den = mo[i]*orb
+        Ji = V2e(den, 0.*den) * dw
+        orbOut += mo[i]*Ji
+    return orbOut
 
 def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 1.e-6):
     a1,b1,a2,b2,a3,b3 = 0.,cell.a[0,0],0.,cell.a[1,1],0.,cell.a[2,2]
@@ -445,17 +453,20 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 
     
     nelec, nuclearPotential = cell.nelectron, cell.energy_nuc()
     
-    def FC(C, J):
+    def FC(C, J, orbs=None):
         C = np.asarray(C)
         Cout = 0.*np.asarray(C)
-
         if (len(C.shape) == 2 ):
             for i in range(C.shape[0]):
                 Cout[i] = (J+nucPot)*C[i] + Hv2(C[i], JacDet, Jac, basMesh, G).real/2. 
+                if (orbs is not None):
+                    Cout[i] -= Ex(C[i], orbs, V2e, nbas/cell.vol)
                 #Cout[i] = (J)*C[i] + nucPot.dot(C[i]) + Hv2(C[i], JacDet, Jac, basMesh, G).real/2. 
             return Cout
 
         else :
+            if (orbs is not None):
+                return (J+nucPot)*C + Hv2(C, JacDet, Jac, basMesh, G).real/2. - Ex(C[i], orbs, V2e, nbas/cell.vol)
             return (J+nucPot)*C + Hv2(C, JacDet, Jac, basMesh, G).real/2.         
     
     def precond(x, e0):
@@ -472,7 +483,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 
 
     davidsonTol = 1.e-3 
     j = V2e(density.real, 0.*G2, davidsonTol) * nbas/cell.vol
-    Ho = FC(orbs, j/2.)
+    Ho = FC(orbs, j, orbs)
     Energy = 2.*np.einsum('ig,ig', orbs, Ho)  + nuclearPotential
 
 
@@ -514,7 +525,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 
     '''
     t0 = time.time()
     for it in range(80):
-        conv, e, orbs = Davidson.davidson1(lambda C : FC(C, j), orbs, precond, nroots=nelec//2, verbose=0, tol=davidsonTol)
+        conv, e, orbs = Davidson.davidson1(lambda C : FC(C, j, orbs), orbs, precond, nroots=nelec//2, verbose=0, tol=davidsonTol)
         #orbs, e, iter, maxerror = Davidson.Davidson(lambda C : FC(C, j), precond, Ck)
         orbs = np.asarray(orbs)
         
@@ -525,8 +536,9 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 
         error = j - oldj
         
         oldE = Energy
-        Ho = FC(orbs, j/2.)
-        Energy = 2.*np.einsum('ig,ig', orbs, Ho)  + nuclearPotential
+        Ho = FC(orbs, j, orbs)
+        Ho1 = FC(orbs, 0*j)
+        Energy = np.einsum('ig,ig', orbs, Ho) + np.einsum('ig,ig', orbs, Ho1)  + nuclearPotential
         errorNorm = np.linalg.norm(error/JacDet**0.5) * (cell.vol/nbas)**0.5
 
         de = abs(Energy - oldE).real
@@ -534,7 +546,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, eps = 
 
         dt = time.time() - t0
         print("{0:3d}   {1:15.8f}  {2:15.8f}  {3:15.8f}  {4:15.2f}".format(it, Energy.real, errorNorm, de, dt) )
-        if (de< 1.e-8 ):
+        if (de< 1.e-8):
            break
 
         #j = dc.Apply(j, error)[0]
