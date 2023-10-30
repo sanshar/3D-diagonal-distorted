@@ -7,6 +7,7 @@ import finufft, FFTInterpolation, Davidson
 import ctypes, numpy, time
 from jax import numpy as jnp
 
+'''
 ndpointer = numpy.ctypeslib.ndpointer
 libLindsey = ctypes.cdll.LoadLibrary('libLindsey.so')
 LindseyVals = libLindsey.LindseyVals
@@ -16,6 +17,7 @@ LindseyVals.argtypes = [
     ctypes.c_int,
     ndpointer(ctypes.c_double, flags="C_CONTIGUOUS")
 ]
+'''
 
 def cond_and_body(y, invFlow, maxIter, alpha,tol):
     #@jit
