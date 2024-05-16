@@ -1,4 +1,4 @@
-import pyscf, LindseyWavelets, Distort, time, scipy, Distort2, Distort3
+import pyscf, time, scipy, Distort2, Distort3
 import numpy as np
 from diis import FDiisContext
 import matplotlib.pyplot as plt
@@ -476,21 +476,148 @@ def makeACE(mo, V2e, dw):
     L = np.linalg.cholesky(Minv)
     return L.T.dot(W)
 
-'''
-def optimizeFourier(cell, mf, nmesh, Fx, Fy, Fz):
-    A = cell.lattice_vectors()
-    a1,b1,a2,b2,a3,b3 = 0.,A[0,0],0.,A[1,1],0.,A[2,2]
-    gx = np.linspace(a1,b1,nmesh[0]+1)#+1.e-6
-    gy = np.linspace(a2,b2,nmesh[1]+1)#+1.e-6
-    gz = np.linspace(a3,b3,nmesh[2]+1)#+1.e-6
-    Tbasx, Tbasy, Tbasz = Distort3.fastrak(Fx, Fy, Fz, gx, gy, gz, a1, b1, a2, b2, a3, b3)
-    Tbasx, Tbasy, Tbasz = Tbasx[:nmesh[0],:nmesh[1],:nmesh[2]], Tbasy[:nmesh[0],:nmesh[1],:nmesh[2]], Tbasz[:nmesh[0],:nmesh[1],:nmesh[2]]
+@jit
+def gaussVal(alpha, m, center, grid, A, B, C, norm):
+    val =  (center[0]-grid[:,0]+0)**m[0]*(center[1]-grid[:,1]+0)**m[1]*(center[2]-grid[:,2]+0)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0])**2) * jnp.exp(-alpha*(center[1]-grid[:,1])**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+0)**2)
+    val += (center[0]-grid[:,0]+0)**m[0]*(center[1]-grid[:,1]+0)**m[1]*(center[2]-grid[:,2]+C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0])**2) * jnp.exp(-alpha*(center[1]-grid[:,1])**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+C)**2)
+    val += (center[0]-grid[:,0]+0)**m[0]*(center[1]-grid[:,1]+0)**m[1]*(center[2]-grid[:,2]-C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0])**2) * jnp.exp(-alpha*(center[1]-grid[:,1])**2) * jnp.exp(-alpha*(center[2]-grid[:,2]-C)**2)
 
+    val += (center[0]-grid[:,0]+A)**m[0]*(center[1]-grid[:,1]+0)**m[1]*(center[2]-grid[:,2]+0)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]+A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1])**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+0)**2)
+    val += (center[0]-grid[:,0]+A)**m[0]*(center[1]-grid[:,1]+0)**m[1]*(center[2]-grid[:,2]+C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]+A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1])**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+C)**2)
+    val += (center[0]-grid[:,0]+A)**m[0]*(center[1]-grid[:,1]+0)**m[1]*(center[2]-grid[:,2]-C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]+A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1])**2) * jnp.exp(-alpha*(center[2]-grid[:,2]-C)**2)
+
+    val += (center[0]-grid[:,0]-A)**m[0]*(center[1]-grid[:,1]+0)**m[1]*(center[2]-grid[:,2]+0)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]-A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1])**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+0)**2)
+    val += (center[0]-grid[:,0]-A)**m[0]*(center[1]-grid[:,1]+0)**m[1]*(center[2]-grid[:,2]+C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]-A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1])**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+C)**2)
+    val += (center[0]-grid[:,0]-A)**m[0]*(center[1]-grid[:,1]+0)**m[1]*(center[2]-grid[:,2]-C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]-A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1])**2) * jnp.exp(-alpha*(center[2]-grid[:,2]-C)**2)
+
+    val += (center[0]-grid[:,0]+0)**m[0]*(center[1]-grid[:,1]+B)**m[1]*(center[2]-grid[:,2]+0)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0])**2) * jnp.exp(-alpha*(center[1]-grid[:,1]+B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+0)**2)
+    val += (center[0]-grid[:,0]+0)**m[0]*(center[1]-grid[:,1]+B)**m[1]*(center[2]-grid[:,2]+C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0])**2) * jnp.exp(-alpha*(center[1]-grid[:,1]+B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+C)**2)
+    val += (center[0]-grid[:,0]+0)**m[0]*(center[1]-grid[:,1]+B)**m[1]*(center[2]-grid[:,2]-C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0])**2) * jnp.exp(-alpha*(center[1]-grid[:,1]+B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]-C)**2)
+
+    val += (center[0]-grid[:,0]+A)**m[0]*(center[1]-grid[:,1]+B)**m[1]*(center[2]-grid[:,2]+0)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]+A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]+B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+0)**2)
+    val += (center[0]-grid[:,0]+A)**m[0]*(center[1]-grid[:,1]+B)**m[1]*(center[2]-grid[:,2]+C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]+A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]+B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+C)**2)
+    val += (center[0]-grid[:,0]+A)**m[0]*(center[1]-grid[:,1]+B)**m[1]*(center[2]-grid[:,2]-C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]+A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]+B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]-C)**2)
+
+    val += (center[0]-grid[:,0]-A)**m[0]*(center[1]-grid[:,1]+B)**m[1]*(center[2]-grid[:,2]+0)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]-A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]+B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+0)**2)
+    val += (center[0]-grid[:,0]-A)**m[0]*(center[1]-grid[:,1]+B)**m[1]*(center[2]-grid[:,2]+C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]-A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]+B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+C)**2)
+    val += (center[0]-grid[:,0]-A)**m[0]*(center[1]-grid[:,1]+B)**m[1]*(center[2]-grid[:,2]-C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]-A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]+B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]-C)**2)
+
+    val += (center[0]-grid[:,0]+0)**m[0]*(center[1]-grid[:,1]-B)**m[1]*(center[2]-grid[:,2]+0)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0])**2) * jnp.exp(-alpha*(center[1]-grid[:,1]-B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+0)**2)
+    val += (center[0]-grid[:,0]+0)**m[0]*(center[1]-grid[:,1]-B)**m[1]*(center[2]-grid[:,2]+C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0])**2) * jnp.exp(-alpha*(center[1]-grid[:,1]-B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+C)**2)
+    val += (center[0]-grid[:,0]+0)**m[0]*(center[1]-grid[:,1]-B)**m[1]*(center[2]-grid[:,2]-C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0])**2) * jnp.exp(-alpha*(center[1]-grid[:,1]-B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]-C)**2)
+
+    val += (center[0]-grid[:,0]+A)**m[0]*(center[1]-grid[:,1]-B)**m[1]*(center[2]-grid[:,2]+0)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]+A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]-B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+0)**2)
+    val += (center[0]-grid[:,0]+A)**m[0]*(center[1]-grid[:,1]-B)**m[1]*(center[2]-grid[:,2]+C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]+A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]-B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+C)**2)
+    val += (center[0]-grid[:,0]+A)**m[0]*(center[1]-grid[:,1]-B)**m[1]*(center[2]-grid[:,2]-C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]+A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]-B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]-C)**2)
+
+    val += (center[0]-grid[:,0]-A)**m[0]*(center[1]-grid[:,1]-B)**m[1]*(center[2]-grid[:,2]+0)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]-A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]-B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+0)**2)
+    val += (center[0]-grid[:,0]-A)**m[0]*(center[1]-grid[:,1]-B)**m[1]*(center[2]-grid[:,2]+C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]-A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]-B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]+C)**2)
+    val += (center[0]-grid[:,0]-A)**m[0]*(center[1]-grid[:,1]-B)**m[1]*(center[2]-grid[:,2]-C)**m[2]*jnp.exp(-alpha*(center[0]-grid[:,0]-A)**2) * jnp.exp(-alpha*(center[1]-grid[:,1]-B)**2) * jnp.exp(-alpha*(center[2]-grid[:,2]-C)**2)
+
+    return val*norm*(-1.)**(m[0]+m[1]+m[2])
+
+
+@jit
+def ffun(x,a,b,n):
+    nx = x.shape[0]
+    u = jnp.reshape( 2*jnp.pi*(x - (a+b)/2)/(b-a), (nx,1) )
+    f = jnp.exp(1j*n*u) / jnp.sqrt(b-a)
+    return f
+
+# define Fourier mode derivative evaluator (not properly normalized...)
+@jit
+def dffun(x,a,b,n):
+    nx = x.shape[0]
+    u = jnp.reshape( 2*jnp.pi*(x - (a+b)/2)/(b-a), (nx,1) )
+    df = ((2*jnp.pi)/(b-a)) * 1j*n * jnp.exp(1j*n*u) / jnp.sqrt(b-a)
+    return df
+
+@jit
+def fourier_fastrak(C_T1,C_T2,C_T3,xp1,xp2,xp3,a1,b1,a2,b2,a3,b3,nx,ny,nz):
+
+    np1 = xp1.shape[0]
+    np2 = xp2.shape[0]
+    np3 = xp3.shape[0]
+
+    fp1 = ffun(xp1,a1,b1,nx)
+    fp2 = ffun(xp2,a2,b2,ny)
+    fp3 = ffun(xp3,a3,b3,nz)
+
+    T1fit = jnp.reshape(xp1,(np1,1,1)) + jnp.real ( jnp.einsum('abc,xa,yb,zc->xyz',C_T1,fp1,fp2,fp3) )
+    T2fit = jnp.reshape(xp2,(1,np2,1)) + jnp.real ( jnp.einsum('abc,xa,yb,zc->xyz',C_T2,fp1,fp2,fp3) )
+    T3fit = jnp.reshape(xp3,(1,1,np3)) + jnp.real ( jnp.einsum('abc,xa,yb,zc->xyz',C_T3,fp1,fp2,fp3) )
+
+    return T1fit,T2fit,T3fit
+
+
+@jit
+def fourier_fastrak_jac(C_T1,C_T2,C_T3,xp1,xp2,xp3,a1,b1,a2,b2,a3,b3, nx, ny, nz):
+
+    np1 = xp1.shape[0]
+    np2 = xp2.shape[0]
+    np3 = xp3.shape[0]
+
+    fp1 = ffun(xp1,a1,b1,nx)
+    fp2 = ffun(xp2,a2,b2,ny)
+    fp3 = ffun(xp3,a3,b3,nz)
+
+    dfp1 = dffun(xp1,a1,b1,nx)
+    dfp2 = dffun(xp2,a2,b2,ny)
+    dfp3 = dffun(xp3,a3,b3,nz)
+
+
+    J11fit = 1.0 + jnp.real( jnp.einsum('abc,xa,yb,zc->xyz',C_T1,dfp1,fp2,fp3) )
+    J12fit = jnp.real( jnp.einsum('abc,xa,yb,zc->xyz',C_T1,fp1,dfp2,fp3) )
+    J13fit = jnp.real( jnp.einsum('abc,xa,yb,zc->xyz',C_T1,fp1,fp2,dfp3) )
+
+    J21fit = jnp.real( jnp.einsum('abc,xa,yb,zc->xyz',C_T2,dfp1,fp2,fp3) )
+    J22fit = 1.0 + jnp.real( jnp.einsum('abc,xa,yb,zc->xyz',C_T2,fp1,dfp2,fp3) )
+    J23fit = jnp.real( jnp.einsum('abc,xa,yb,zc->xyz',C_T2,fp1,fp2,dfp3) )
+
+    J31fit = jnp.real( jnp.einsum('abc,xa,yb,zc->xyz',C_T3,dfp1,fp2,fp3) )
+    J32fit = jnp.real( jnp.einsum('abc,xa,yb,zc->xyz',C_T3,fp1,dfp2,fp3) )
+    J33fit = 1.0 + jnp.real( jnp.einsum('abc,xa,yb,zc->xyz',C_T3,fp1,fp2,dfp3) )
+
+    DT = jnp.zeros((np1,np2,np3,3,3))
+    DT = DT.at[:,:,:,0,0].set(J11fit)
+    DT = DT.at[:,:,:,0,1].set(J12fit)
+    DT = DT.at[:,:,:,0,2].set(J13fit)
+    DT = DT.at[:,:,:,1,0].set(J21fit)
+    DT = DT.at[:,:,:,1,1].set(J22fit)
+    DT = DT.at[:,:,:,1,2].set(J23fit)
+    DT = DT.at[:,:,:,2,0].set(J31fit)
+    DT = DT.at[:,:,:,2,1].set(J32fit)
+    DT = DT.at[:,:,:,2,2].set(J33fit)
+
+    J = jnp.linalg.det(DT)
+
+    return DT,J
+
+#'''
+def optimizeFourier(L, nmesh, Fx, Fy, Fz, nx, ny, nz, gx, gy, gz, alpha, m, center, norm, Smat, dw):
+    A, B, C = L[0,0], L[1,1], L[2,2]
     
-    #distortedGrid = np.hstack((Tbasx.reshape(-1,1), Tbasy.reshape(-1,1), Tbasz.reshape(-1,1)))
-'''
+    Tbasx, Tbasy, Tbasz = fourier_fastrak(Fx, Fy, Fz, gx, gy, gz, 0, A, 0, B, 0, C, nx, ny, nz)
+    Tbasx, Tbasy, Tbasz = Tbasx[:-1,:-1,:-1], Tbasy[:-1,:-1,:-1], Tbasz[:-1,:-1,:-1]
+    grid = jnp.hstack((Tbasx.reshape(-1,1), Tbasy.reshape(-1,1), Tbasz.reshape(-1,1))).real
+
+    DT, J = fourier_fastrak_jac(Fx, Fy, Fz, gx, gy, gz, 0, A, 0, B, 0, C, nx, ny, nz)
+    DT = DT[:-1,:-1,:-1]
+    DT = DT.reshape(-1,3,3)
+    JacDet = jnp.asarray([jnp.linalg.det(Ji) for Ji in DT])
+
+    aoVals =  vmap(gaussVal, in_axes = (0, 0, 0, None, None, None, None, 0))(alpha, m, center, grid, A, B, C, norm) 
+    S = jnp.einsum('ag,g,bg->ab', aoVals, JacDet, aoVals)
+    #return S
+    #print(ao2.shape)
+    #S = jnp.einsum('ag,bg->ab', ao2, aoVals) * dw
+    #return S
+    #print(S.shape, Smat.shape)
+    error = jnp.linalg.norm(S-Smat)
+    #print(error)
+    return error
             
-def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, ACE = True, productGrid = False, eps = 1.e-6):
+def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint, ACE = True, productGrid = False, eps = 1.e-6):
     A = cell.lattice_vectors()
     a1,b1,a2,b2,a3,b3 = 0.,A[0,0],0.,A[1,1],0.,A[2,2]
 
@@ -532,6 +659,27 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, ACE = True, productGrid = F
     nucPos = np.asarray([cell._env[cell._atm[i,1]:cell._atm[i,1]+3] for i in range(cell._atm.shape[0])])
 
 
+    v0 = 1./JacDet**0.5
+    v0 = v0/np.linalg.norm(v0)
+    def V2e(vec, guess, tol=1.e-10):
+        vec2 = vec*JacDet**0.5
+        
+        vec2 = vec2 - vec2.dot(v0) * v0
+        #pot, info = scipy.sparse.linalg.cg(Hvop2, vec2, x0=guess, M=preCond, callback=printNorm, tol = tol**0.5/np.linalg.norm(vec2), atol=tol**0.5)
+        pot, info = scipy.sparse.linalg.cg(Hvop2, vec2, x0=guess, M=preCond, tol = tol**0.5/np.linalg.norm(vec2), atol=tol**0.5)
+        if (info > 0):
+            print("conjugate gradient convergence not achieved!!!!!")
+            exit(0)
+
+        potout = pot - pot.dot(v0) * v0
+
+        #error = Hv2(potout, JacDet, Jac, basMesh, G) - vec2
+        #print("final error ", np.linalg.norm(error))
+        
+        potout = potout * JacDet**0.5
+        return potout.real * 4. * np.pi 
+        
+
     #denseMesh = nmesh #[46,46,46]
     #nucPot = getNuclearPotDenseGrid(denseMesh, nbas, nucPos, cell._atm[:,0], \
     #    invFlow, vmap(Tdel, in_axes=(0)), cell, distortedGrid, JacAll) * JacDet**0.5
@@ -547,23 +695,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, ACE = True, productGrid = F
     #nucPot = getNuclearPotDenseGridNoDiagonal(denseMesh, nbas, nucPos, cell._atm[:,0], \
     #    invFlow, JacAllFun, cell, productGrid) 
         
-    v0 = 1./JacDet**0.5
-    v0 = v0/np.linalg.norm(v0)
-    def V2e(vec, guess, tol=1.e-10):
-        vec2 = vec*JacDet**0.5
-        
-        vec2 = vec2 - vec2.dot(v0) * v0
-        #pot = scipy.sparse.linalg.cg(Hvop2, vec2, x0=guess, M=preCond, callback=printNorm, tol = tol**0.5/np.linalg.norm(vec2), atol=tol**0.5)
-        pot = scipy.sparse.linalg.cg(Hvop2, vec2, x0=guess, M=preCond, tol = tol**0.5/np.linalg.norm(vec2), atol=tol**0.5)
 
-        potout = pot[0] - pot[0].dot(v0) * v0
-
-        #error = Hv2(potout, JacDet, Jac, basMesh, G) - vec2
-        #print("final error ", np.linalg.norm(error))
-        
-        potout = potout * JacDet**0.5
-        return potout.real * 4. * np.pi 
-        
 
     #'''
     N1 = mf.with_df.get_pp()
@@ -588,19 +720,19 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, ACE = True, productGrid = F
     if isinstance(mocoeff, list):
         mocoeff = mocoeff[0]
         
-    nuc, kin = jnp.einsum('ik,ij,jk', mocoeff[:,:nocc], N, mocoeff[:,:nocc]), np.einsum('ik,ij,jk', mocoeff[:,:nocc], K, mocoeff[:,:nocc])
+    dm = 2*mocoeff[:,:nocc].dot(mocoeff[:,:nocc].T)
+    jao, kao = mf.get_jk(dm)
+    jmo, kmo = jnp.einsum('ik,ij,jl->kl', mocoeff[:,:nocc], jao, mocoeff[:,:nocc]), np.einsum('ik,ij,jl->kl', mocoeff[:,:nocc], kao, mocoeff[:,:nocc])
+    nuc, kin = jnp.einsum('ik,ij,jl->kl', mocoeff[:,:nocc], N1, mocoeff[:,:nocc]), np.einsum('ik,ij,jl->kl', mocoeff[:,:nocc], K1, mocoeff[:,:nocc])
     moVal = np.einsum('gi,g->ig', ao.dot(mocoeff[:,:nocc]), 1./JacDet**0.5)
     density = 2.*np.einsum('ig,ig->g', moVal, moVal)
     J = V2e(density, 0*density)
     coul = (J*density/2).sum()*cell.vol/nbas
     
-    Cout = 0.*moVal
-    for i in range(nocc):
-        Cout[i] -= Ex(moVal[i], moVal, V2e, nbas/cell.vol)
-    print(nuc, kin, coul, np.einsum('ig,ig', Cout, moVal) * (cell.vol/nbas)**2,  cell.energy_nuc() )
-    print(2.*(nuc+kin)+coul-np.einsum('ig,ig', Cout, moVal) * (cell.vol/nbas)**2 + cell.energy_nuc())
+
+
     #'''
-    
+
     #i = 0
     #def hv(v):
     #    return nucPot*v + Hv2(v, JacDet, Jac, basMesh, G)/2.
@@ -635,12 +767,41 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, ACE = True, productGrid = F
     def precond(x, e0):
         return Condition(x, G2/2, basMesh, e0)
     
-    Ck = np.random.random((nelec//2,nbas))
+    if (mf.mo_coeff is not None):
+        orbs = np.einsum('ij,j->ij', mf.mo_coeff[:,:cell.nelectron//2].T.dot(ao.T), 1/JacDet**0.5) * (cell.vol/nbas)**0.5
+
+    else:
+        Ck = np.random.random((cell.nelectron//2,nbas))
+        conv, e, orbs = Davidson.davidson1(lambda C : FC(C, 0.*G2), Ck, precond, nroots=nelec//2, verbose=0, tol=1e-3)
+        orbs = np.asarray(orbs)
+    
     #conv, e, x0 = Davidson.davidson1(lambda C : FC(C, 0.*G2), Ck, precond, nroots=nelec//2, verbose=0)
     #print(basMesh, conv, e)
 
-    conv, e, orbs = Davidson.davidson1(lambda C : FC(C, 0.*G2), Ck, precond, nroots=nelec//2, verbose=0, tol=1e-3)
-    orbs = np.asarray(orbs)
+    aceOrbs = makeACE(orbs, V2e, nbas/cell.vol)    
+    density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
+    j = V2e(density.real, 0.*G2, 1.e-10) * nbas/cell.vol
+    #Ho = FC(orbs, j, aceOrbs, True)
+    Ht, Hn, Hj, Hk = 0.*orbs, 0.*orbs, 0.*orbs, 0.*orbs
+
+
+    for i in range(orbs.shape[0]):
+        Ht[i] = Hv2(orbs[i], JacDet, Jac, basMesh, G).real/2. 
+        Hn[i] = (nucPot)*orbs[i]
+        Hj[i] = J*orbs[i]
+        Hk[i] = ExACE(orbs[i], aceOrbs)
+        t, n, j, k = orbs[i].dot(Ht[i].T), orbs[i].dot(Hn[i].T), orbs[i].dot(Hj[i].T), orbs[i].dot(Hk[i].T)
+        print("{0:3d}  {1:14.5f}  {2:14.5f}  {3:14.5f}  {4:14.5f} -> {5:14.5f}".format(i, t, n, j, k, t+n+j-k))
+        print("{0:3d}  {1:14.5f}  {2:14.5f}  {3:14.5f}  {4:14.5f} -> {5:14.5f}".format(i, kin[i,i], nuc[i,i], jmo[i,i], kmo[i,i]/2., kin[i,i]+nuc[i,i]+jmo[i,i]-kmo[i,i]/2))
+        print("{0:3d}  {1:14.5f}  {2:14.5f}  {3:14.5f}  {4:14.5f} (ovlp) -> {5:14.5f}".format(i, kin[i,i]-t, nuc[i,i]-n, jmo[i,i]-j, kmo[i,i]/2.-k, orbs[i].dot(orbs[i])-1.))
+        print()
+
+    print("Kin  Error {0:14.8f}".format(2*np.einsum('ig,ig', orbs, Ht) - 2*kin.diagonal().sum()))
+    print("Nuc  Error {0:14.8f}".format(2*np.einsum('ig,ig', orbs, Hn) - 2*nuc.diagonal().sum()))
+    print("Coul Error {0:14.8f}".format( np.einsum('ig,ig', orbs, Hj) - jmo.diagonal().sum()))
+    print("Exc  Error {0:14.8f}".format( np.einsum('ig,ig', orbs, Hk) - kmo.diagonal().sum()/2.))
+    Energy = 2*np.einsum('ig,ig', orbs, Ht) + 2*np.einsum('ig,ig', orbs, Hn) + np.einsum('ig,ig', orbs, Hj) - np.einsum('ig,ig', orbs, Hk) + nuclearPotential    
+    print("{0:14.8f}  {1:14.8f} {2:14.8f}".format(Energy, mf.e_tot, Energy-mf.e_tot))
     
     #orbs = moVal*(cell.vol/nbas)**0.5
     #orbs = np.einsum('gi,ij,g->jg', ao, mocoeff[:,:1], 1./JacDet**0.5) * (cell.vol/nbas)**0.5 #(ao.dot(mocoeff[:,:1])/JacDet**0.5).T
@@ -694,7 +855,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, ACE = True, productGrid = F
             davidsonTol = max(1.e-10, min(davidsonTol, 0.001*de))
 
             dt = time.time() - t0
-            if (de< charge_convtol):
+            if (de< charge_convtol and False):
 
                 break
 

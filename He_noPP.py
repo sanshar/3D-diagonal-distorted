@@ -4,22 +4,24 @@ from pyscf import gto
 import numpy, pyscf, HF, scipy, HF2, HF3, HF4, Distort, Distort2, scipy, HFdirect, temp, Distort3, HFdirect2
 import KnotheTransport, KnotheTransportPeriodic
 import numpy as np
-#from pyscf.pbc import pwscf
 from pyscf.pbc.dft import multigrid
 
 
-ng0 = 10
-for nG in range(10,200,2):
+ng0 = 30
+for nG in range(ng0,200,4):
     cell = pgto.M(
         a = 6*numpy.eye(3),
         #atom = '''Li 5.0 6.0 6.0
                 #H  8.0 6.0 6.0''',
                 #H    4.6 4.6 4.6''',#+gh,
-        atom = '''He 0. 0. 0.
-        He 3. 0. 0.''',
-        basis = "gth-qzv3p",
+        atom = '''Be 3. 3. 3.''',
+        #atom = '''Be 1.666 1.666 1.666''',
+        #          Be 4.333 4.333 4.333''',
+        #He 3. 0. 0.''',
+        #basis = "gth-qzv3p",
         #basis = "anorcc",
-        pseudo = "gth-pade",
+        basis = "cc-pvtz",
+        #pseudo = "gth-pade",
         verbose = 3,
         mesh = [nG, nG, nG],
         spin=0,
@@ -27,7 +29,8 @@ for nG in range(10,200,2):
         unit='B'
     )          
 
-    #cell.mesh=[70,70,70]
+    #cell.mesh=[150,150,150]
+    #from pyscf.pbc import pwscf
     #mf = pwscf.KRHF(cell, cell.make_kpts([1,1,1]), exxdiv=None)
     #mf.kernel()
     #mf = pyscf.pbc.dft.RKS(cell, [1,1,1]).density_fit(auxbasis='weigend')
@@ -47,19 +50,26 @@ for nG in range(10,200,2):
         mf = pyscf.pbc.scf.RHF(cell, exxdiv=None).density_fit(auxbasis='weigend')
         mf.kernel()
 
+        #exit(0)
         #C = KnotheTransport.LearnTransport(15, 15, 15, mf, 12)
-        C = KnotheTransportPeriodic.LearnTransport(15, 15, 15, mf, 12, 0.05)
-        #KnotheTransportPeriodic.Plot2DTransport(C, 25, 25, 0.5)
-        Cx, Cy, Cz = KnotheTransport.fitChebyshev(15, 15, 15, C)
-        Fx, Fy, Fz = KnotheTransportPeriodic.fitFourier(mf, 15, 15, 15, C)
-        #Fx, Fy, Fz = KnotheTransportPeriodic.fitFourier(mf, 2, 2, 2, C)
-        np.save("Cx", Cx)
-        np.save("Cy", Cy)
-        np.save("Cz", Cz)
+
+        #Cx, Cy, Cz = KnotheTransport.fitChebyshev(15, 15, 15, C)
+        
+        C = KnotheTransportPeriodic.LearnTransport(20, 20, 20, mf, 3, 0.0)
+        KnotheTransportPeriodic.Plot2DTransport(C, 25, 25, 3., mf)
+        Fx, Fy, Fz = KnotheTransportPeriodic.fitFourier(mf, 20, 20, 20, C)
+        
+        #np.save("Cx", Cx)
+        #np.save("Cy", Cy)
+        #np.save("Cz", Cz)
         np.save("Fx", Fx)
         np.save("Fy", Fy)
         np.save("Fz", Fz)
         #'''
+
+        #mf = pyscf.pbc.scf.RHF(cell, exxdiv=None).density_fit(auxbasis='weigend')
+        #mf.kernel()
+
     Cx = np.load("Cx.npy")
     Cy = np.load("Cy.npy")
     Cz = np.load("Cz.npy")
@@ -86,8 +96,6 @@ for nG in range(10,200,2):
 
     print("\n\n", cell.mesh)
     #mf = pwscf.KRHF(cell, cell.make_kpts([1,1,1]))
-    mf = pyscf.pbc.scf.RHF(cell, exxdiv=None).density_fit(auxbasis='weigend')
-    mf.kernel()
     #exit(0)
     #continue
 
@@ -96,8 +104,8 @@ for nG in range(10,200,2):
     #invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint = Distort3.returnFunc2(cell, Cx, Cy, Cz)
     invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint = Distort3.returnFuncFourier(cell, Fx, Fy, Fz)
     #print("FOURIER")
-    HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, productGrid=True)
-    #HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint, productGrid=True)
+    #HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, productGrid=True)
+    HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint, productGrid=True)
     #continue
     #exit(0)
     '''

@@ -49,10 +49,48 @@ def tic():
 # specify density
 #jit
 def rhofun(x1,x2,x3, mf, shift):
-  #xx1, xx2, xx3 = x1-3.5, x2-3.5, x3-3.5
+
+  atoms = mf.mol._atm
+  Zi = atoms[:,0]
+  
+  density = 0
+  for a in range(Zi.shape[0]):
+    pos = mf.mol._env[atoms[a,1]:atoms[a,1]+3]
+
+    #xx1, xx2, xx3 = Zi[a]*(x1-pos[0]), Zi[a]*(x2-pos[1]), Zi[a]*(x3-pos[2])
+    #density += 1/(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5
+
+    xx1, xx2, xx3 = (x1-pos[0]), (x2-pos[1]), (x3-pos[2])
+    #density += 1/(xx1**2 + xx2**2 + xx3**2 + (0.1/Zi[a])**2)**0.5
+
+    #density += 1./((xx1**2 + (0.5/Zi[a])**2)/(xx2**2 + (0.5/Zi[a])**2)/(xx3**2 + (0.5/Zi[a])**2))**0.5
+    #density += 1./((xx1**2 + (0.5/Zi[a])**2)*(xx2**2 + (0.5/Zi[a])**2)*(xx3**2 + (0.5/Zi[a])**2))**0.5
+
+    #r = (xx1**2 + xx2**2 + xx3**2)**0.5
+    #density += (jsp.special.erf((r+1e-6) * Zi[a] / 0.1) - jsp.special.erf((r+1e-6) /1.))/(r+1e-6) + 0.05
+
+    density += (jsp.special.erf((xx1+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx1+1e-6) /1.))/(xx1+1e-6) + 0.05**(1./3) \
+      * (jsp.special.erf((xx2+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx2+1e-6) /1.))/(xx2+1e-6) + 0.05**(1./3) \
+      * (jsp.special.erf((xx3+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx3+1e-6) /1.))/(xx3+1e-6) + 0.05**(1./3) 
+
+    #density = 1.
+  return density 
+  #return 1./mf.cell.vol
+  #xx1, xx2, xx3 = x1-3, x2-3, x3-3.
+  #return 1./(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5
+  
+  #xx1, xx2, xx3 = x1-6, x2-4, x3-4.
+  #rho  = 1./(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5/3.
+
+  #xx1, xx2, xx3 = x1-2., x2-4, x3-4.
+  #rho += 1./(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5/3.
+
+  #xx1, xx2, xx3 = x1-4., x2-6, x3-4.
+  #rho += 1./(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5/3.
+
   #rho = jnp.exp(-3.*(0.5**2 + (xx1)**2 + (xx2)**2 + (xx3)**2)**0.5)/jnp.exp(-1.5)/(0.5**2 + (xx1)**2 + (xx2)**2 + (xx3)**2 )**0.5 + 1.0
   #rho = jnp.exp(-0.9 * ((xx1)**2 + (xx2)**2 + (xx3)**2))/(0.05**2 + (xx1)**2 + (xx2)**2 + (xx3)**2 )**0.5  + 1.e-1 #+ 1.0
-  #return rho
+  return rho
 
   nelec = mf.cell.nelectron
 
@@ -94,7 +132,7 @@ def rhofun(x1,x2,x3, mf, shift):
 #nb3 = 10  # dimension 3
 
 # hyperparameters for fixed-point iteration computation of inverse flow
-maxIter = 500 # maximum number of iterations
+maxIter = 1000 # maximum number of iterations
 alpha = 0.3 # mixing parameter
 tol = 1e-15 # convergence tolerance
 
@@ -295,7 +333,7 @@ def LearnTransport(nb1, nb2, nb3, mf, N, shift):
 
 
     # Coefficients encode learned transport
-    C = jnp.zeros((nb1,nb2,nb3,N))
+    C = jnp.zeros((nb1,nb2,nb3,N),dtype=jnp.complex128)
     itervec = jnp.zeros(N-1)
     f = rhorootfun(Xg1,Xg2,Xg3,mf,N, shift)
     F = jnp.reshape(f,(ng1,ng2,ng3))
@@ -331,8 +369,8 @@ def LearnTransport(nb1, nb2, nb3, mf, N, shift):
             F = jnp.reshape(f,(ng1,ng2,ng3))
     return C
 
-def Plot2DTransport(C, np1, np2, z):
-    a1,b1,a2,b2,a3,b3 = 0.,1,0.,1,0.,1
+def Plot2DTransport(C, np1, np2, z, mf):
+    a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]
     N = C.shape[-1]
 
     # define uniform plotting grid

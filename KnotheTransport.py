@@ -49,10 +49,18 @@ def tic():
 # specify density
 #jit
 def rhofun(x1,x2,x3, mf):
-  #xx1, xx2, xx3 = x1-3.5, x2-3.5, x3-3.5
+  #xx1, xx2, xx3 = x1-6, x2-4, x3-4.
+  #rho  = 1./(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5/3.
+
+  #xx1, xx2, xx3 = x1-2., x2-4, x3-4.
+  #rho += 1./(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5/3.
+
+  xx1, xx2, xx3 = x1-4., x2-1, x3-4.
+  rho = 1./(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5/3.
+
   #rho = jnp.exp(-3.*(0.5**2 + (xx1)**2 + (xx2)**2 + (xx3)**2)**0.5)/jnp.exp(-1.5)/(0.5**2 + (xx1)**2 + (xx2)**2 + (xx3)**2 )**0.5 + 1.0
   #rho = jnp.exp(-0.9 * ((xx1)**2 + (xx2)**2 + (xx3)**2))/(0.05**2 + (xx1)**2 + (xx2)**2 + (xx3)**2 )**0.5  + 1.e-1 #+ 1.0
-  #return rho
+  return rho
 
   nelec = mf.cell.nelectron
 
