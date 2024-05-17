@@ -28,9 +28,9 @@ def getGaussian(params, xvals):
   res = solver.run(params)  
   return res
 
-N = 4
-a = jnp.asarray(np.random.random((2*N,)))
-x = jnp.arange(-4,4,8/100)
+N = 3
+a = jnp.asarray(np.hstack( (np.ones((N,)), np.arange(3,20,17/N) ) ) )
+x = jnp.arange(-4,4,8/1000)
 aout = getGaussian(a, x)
 print(aout.params)
 
