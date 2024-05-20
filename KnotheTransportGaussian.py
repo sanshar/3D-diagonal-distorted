@@ -2,14 +2,14 @@ from jax import numpy as jnp
 from jax import scipy as jsp
 from jax import value_and_grad, vmap, lax, jit, random
 
-import jax, jaxopt
+import jax, jaxopt, time
 import scipy.special
 import numpy as np
 import matplotlib.pyplot as plt
 
-maxIter = 1000 # maximum number of iterations
+maxIter = 2000 # maximum number of iterations
 alpha = 0.3 # mixing parameter
-tol = 1e-15 # convergence tolerance
+tol = 1e-5 # convergence tolerance
 
 @jit
 def gfun(alpha, c, x):
@@ -64,7 +64,7 @@ def flow(x1, x2, x3, C, a1, b1, a2, b2, a3, b3):
     T3 = jnp.real(T3)
     rho = jnp.real(rho)
     
-    return T1,T2,T3,rho
+    return T1,T2,T3,rho * L1 * L2 * L3
 
 @jit
 def errFun(allx, allT, c,a1,b1,a2,b2,a3,b3):
@@ -73,7 +73,7 @@ def errFun(allx, allT, c,a1,b1,a2,b2,a3,b3):
     x2 = allx[N:2*N]
     x3 = allx[2*N:]
 
-    T1, T2, T3, rho = flow(x1, x2, x3, c, a1, b1, a2, b2, a3, b3)
+    T1, T2, T3, _ = flow(x1, x2, x3, c, a1, b1, a2, b2, a3, b3)
     return jnp.linalg.norm((allT - jnp.hstack((T1, T2, T3)) ))
 
 '''
@@ -105,16 +105,25 @@ def invflow(y1,y2,y3,c,a1,b1,a2,b2,a3,b3,maxIter,alpha,tol):
     T1, T2, T3, rho = flow(x1,x2,x3,c,a1,b1,a2,b2,a3,b3)
     init_val = (x1,x2,x3,T1,T2,T3,rho,0)
 
-    solver = jaxopt.GradientDescent(fun=errFun, maxiter=maxIter)
+
+    #'''
+    #solver = jaxopt.LevenbergMarquardt(residual_fun = errFun, maxiter=maxIter)
+    #solver = jaxopt.GaussNewton(residual_fun = errFun, maxiter=maxIter)
+    #solver = jaxopt.GradientDescent(fun=errFun, maxiter=maxIter)
+    #solver = jaxopt.ScipyMinimize(fun=errFun, maxiter=maxIter)
     #solver = jaxopt.NonlinearCG(fun=errFun, method="polak-ribiere", maxiter=maxIter)
-
-    res = solver.run(jnp.hstack((T1,T2,T3)), jnp.hstack((y1,y2,y3)), c,a1,b1,a2,b2,a3,b3)      
-
+    solver = jaxopt.LBFGS(fun=errFun, value_and_grad=False, maxiter=maxIter)
+    res = solver.run(jnp.hstack((x1,x2,x3)), jnp.hstack((y1,y2,y3)), c,a1,b1,a2,b2,a3,b3)      
     N = y1.shape[0]
     allS = res.params
     return allS[:N], allS[N:2*N], allS[2*N:], 1./rho
+    #'''
 
-
+    '''
+    x1,x2,x3,T1,T2,T3,rho,iter = lax.while_loop(cond_fun, body_fun, init_val)
+    return x1, x2, x3, 1./rho
+    '''
+    
 def create_cond_and_body(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
 
   @jit
@@ -142,7 +151,7 @@ def create_cond_and_body(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
 
 
 if __name__ =="__main__":
-    C = jnp.asarray([  2.3099184,   6.475843,   12.867022, 0.05, 5., 5., 5., 5.,   1.6527886,  26.1984,    180.28716,0.  ])
+    C = jnp.asarray([  2.3099184,   6.475843,   12.867022, 0.05, 0., 0., 0., 0.,   1.6527886,  26.1984,    180.28716,0.  ])
     #C = jnp.asarray([  2.3099184,   6.475843,   12.867022, 0.0005, 0., 0., 0., 0.,   1.6527886,  26.1984,    180.28716,0.  ])
     #C = jnp.asarray([  2.3099184, 0.,   10.6527886])
 
@@ -165,11 +174,15 @@ if __name__ =="__main__":
     Xp2 = jnp.reshape(X2,np1*np2)
     Xp3 = 0.*jnp.ones(np1*np2)
 
+    t0 = time.time()
     #print(flow(0*jnp.ones((1,)), b2*jnp.ones((1,)), 0*jnp.ones((1,)), C, a1, b1, a2, b2, a3, b3))
     #T1, T2, T3, rho = flow(x1, x2, x2, C, a1, b1, a2, b2, a3, b3)
     #exit(0)
     T1,T2,T3,_ = flow(Xp3,Xp2,Xp1,C,a1,b1,a2,b2,a3,b3)
+    print("flow ", time.time()-t0)
+    
     S1,S2,S3,_ = invflow(Xp3,Xp2,Xp1,C,a1,b1,a2,b2,a3,b3,maxIter,alpha,tol)
+    print("inv flow ", time.time()-t0)
 
     t1, t2, t3, _ = flow(S1, S2, S3, C, a1, b1, a2, b2, a3, b3)
     err1 = jnp.max(jnp.abs(t1-Xp3))/(b1-a1)
@@ -177,7 +190,7 @@ if __name__ =="__main__":
     err3 = jnp.max(jnp.abs(t3-Xp1))/(b3-a3)
     
     print(err1, err2, err3)
-
+    print(jnp.linalg.norm(t1-Xp3),  jnp.linalg.norm(t2-Xp2), jnp.linalg.norm(t3-Xp1))
     #print(Xp1)
     #print(Xp2)
     #print(T1)

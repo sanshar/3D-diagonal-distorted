@@ -7,14 +7,14 @@ import numpy as np
 from pyscf.pbc.dft import multigrid
 
 
-ng0 = 30
+ng0 = 10
 for nG in range(ng0,200,4):
     cell = pgto.M(
-        a = 6*numpy.eye(3),
+        a = 8*numpy.eye(3),
         #atom = '''Li 5.0 6.0 6.0
                 #H  8.0 6.0 6.0''',
                 #H    4.6 4.6 4.6''',#+gh,
-        atom = '''Be 3. 3. 3.''',
+        atom = '''Be 4. 4. 4.''',
         #atom = '''Be 1.666 1.666 1.666''',
         #          Be 4.333 4.333 4.333''',
         #He 3. 0. 0.''',
@@ -55,28 +55,36 @@ for nG in range(ng0,200,4):
 
         #Cx, Cy, Cz = KnotheTransport.fitChebyshev(15, 15, 15, C)
         
-        C = KnotheTransportPeriodic.LearnTransport(20, 20, 20, mf, 3, 0.0)
-        KnotheTransportPeriodic.Plot2DTransport(C, 25, 25, 3., mf)
-        Fx, Fy, Fz = KnotheTransportPeriodic.fitFourier(mf, 20, 20, 20, C)
+        #C = KnotheTransportPeriodic.LearnTransport(16, 16, 16, mf, 15, 0.0)
+        #KnotheTransportPeriodic.Plot2DTransport(C, 25, 25, 5., mf)
+
+        C = KnotheTransportPeriodic.LearnTransportInverse(16, 16, 16, mf, 15, 0.0)
+        np.save("fullC", C)
+        #C = np.load("fullC.npy").reshape(10,10,10,-1)
+        #print("Solving done")
+        KnotheTransportPeriodic.Plot2DTransportInverseFit(C, 25, 25, 4., mf)
+        
+        #Fx, Fy, Fz = KnotheTransportPeriodic.fitFourier(mf, 50, 50, 50, C)
+        #print("Fitting done")
         
         #np.save("Cx", Cx)
         #np.save("Cy", Cy)
         #np.save("Cz", Cz)
-        np.save("Fx", Fx)
-        np.save("Fy", Fy)
-        np.save("Fz", Fz)
+        #np.save("Fx", Fx)
+        #np.save("Fy", Fy)
+        #np.save("Fz", Fz)
         #'''
 
         #mf = pyscf.pbc.scf.RHF(cell, exxdiv=None).density_fit(auxbasis='weigend')
         #mf.kernel()
 
-    Cx = np.load("Cx.npy")
-    Cy = np.load("Cy.npy")
-    Cz = np.load("Cz.npy")
+    #Cx = np.load("Cx.npy")
+    #Cy = np.load("Cy.npy")
+    #Cz = np.load("Cz.npy")
 
-    Fx = np.load("Fx.npy")
-    Fy = np.load("Fy.npy")
-    Fz = np.load("Fz.npy")
+    #Fx = np.load("Fx.npy")
+    #Fy = np.load("Fy.npy")
+    #Fz = np.load("Fz.npy")
 
     #'''
     #exit(0)
@@ -99,13 +107,18 @@ for nG in range(ng0,200,4):
     #exit(0)
     #continue
 
+    a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]
+    flow = lambda x, y, z : KnotheTransportPeriodic.inv_flow(x, y, z, C, a1, b1, a2, b2, a3, b3, C.shape[-1])
+    invFlow = lambda x, y, z : KnotheTransportPeriodic.flow(x, y, z, C, a1, b1, a2, b2, a3, b3, C.shape[-1])
+    Jac = lambda x, y, z, : KnotheTransportPeriodic.getJac(x, y, z, C, a1, b1, a2, b2, a3, b3, C.shape[-1])
+    
     #invFlow, JacAllFun = Distort3.returnFunc(cell)
     #HFdirect.HFExact(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, productGrid=False)
     #invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint = Distort3.returnFunc2(cell, Cx, Cy, Cz)
-    invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint = Distort3.returnFuncFourier(cell, Fx, Fy, Fz)
+    #invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint = Distort3.returnFuncFourier(cell, Fx, Fy, Fz)
     #print("FOURIER")
     #HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, productGrid=True)
-    HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint, productGrid=True)
+    HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, flow, Jac)
     #continue
     #exit(0)
     '''

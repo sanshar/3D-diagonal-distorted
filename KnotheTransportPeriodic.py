@@ -1,16 +1,17 @@
 #@title Import dependencies
 
 import os
-#os.environ['JAX_ENABLE_X64'] = 'True'
-os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1'
-#os.environ['JAX_PLATFORM_NAME'] = 'cpu'
+os.environ['JAX_ENABLE_X64'] = 'True'
+os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=6'
+os.environ['JAX_PLATFORM_NAME'] = 'cpu'
+os.environ['JAX_DISABLE_JIT'] = 'True'
 from jax import numpy as jnp
 from jax import scipy as jsp
-from jax import value_and_grad, vmap, lax, jit, random
+from jax import value_and_grad, vmap, lax, jit, random, jacfwd, jacrev
 #from jax.experimental.sparse import BCOO
 #from jax.experimental.sparse import BCSR
 
-import jax
+import jax, jaxopt
 import scipy.special
 import numpy as np
 import matplotlib.pyplot as plt
@@ -46,6 +47,9 @@ def tic():
     toc(False)
 
 
+def rhofun_fake(x1, x2, x3, mf, shift):
+  return rhofun(x1, x2, x3, mf, shift)
+ 
 # specify density
 #jit
 def rhofun(x1,x2,x3, mf, shift):
@@ -66,12 +70,12 @@ def rhofun(x1,x2,x3, mf, shift):
     #density += 1./((xx1**2 + (0.5/Zi[a])**2)/(xx2**2 + (0.5/Zi[a])**2)/(xx3**2 + (0.5/Zi[a])**2))**0.5
     #density += 1./((xx1**2 + (0.5/Zi[a])**2)*(xx2**2 + (0.5/Zi[a])**2)*(xx3**2 + (0.5/Zi[a])**2))**0.5
 
-    #r = (xx1**2 + xx2**2 + xx3**2)**0.5
-    #density += (jsp.special.erf((r+1e-6) * Zi[a] / 0.1) - jsp.special.erf((r+1e-6) /1.))/(r+1e-6) + 0.05
+    r = (xx1**2 + xx2**2 + xx3**2)**0.5
+    density += (jsp.special.erf((r+1e-6) * Zi[a] / 0.1) - jsp.special.erf((r+1e-6) /2.))/(r+1e-6) + 0.05
 
-    density += (jsp.special.erf((xx1+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx1+1e-6) /1.))/(xx1+1e-6) + 0.05**(1./3) \
-      * (jsp.special.erf((xx2+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx2+1e-6) /1.))/(xx2+1e-6) + 0.05**(1./3) \
-      * (jsp.special.erf((xx3+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx3+1e-6) /1.))/(xx3+1e-6) + 0.05**(1./3) 
+    #density += (jsp.special.erf((xx1+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx1+1e-6) /1.))/(xx1+1e-6) + 0.05**(1./3) \
+    #  * (jsp.special.erf((xx2+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx2+1e-6) /1.))/(xx2+1e-6) + 0.05**(1./3) \
+    #  * (jsp.special.erf((xx3+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx3+1e-6) /1.))/(xx3+1e-6) + 0.05**(1./3) 
 
     #density = 1.
   return density 
@@ -133,8 +137,8 @@ def rhofun(x1,x2,x3, mf, shift):
 
 # hyperparameters for fixed-point iteration computation of inverse flow
 maxIter = 1000 # maximum number of iterations
-alpha = 0.3 # mixing parameter
-tol = 1e-15 # convergence tolerance
+alpha = 1. # mixing parameter
+tol = 1e-10 # convergence tolerance
 
 
 
@@ -160,7 +164,14 @@ def gfun(x,a,b,nb):
 '''
 '''
 
-
+def getJac(Xp1, Xp2, Xp3, C,a1,b1,a2,b2,a3,b3,N):
+  def fun(X):
+    T1, T2, T3, _ = flowJittable(X[:1], X[1:2], X[2:], C,a1,b1,a2,b2,a3,b3,N)
+    return jnp.asarray([T1[0], T2[0], T3[0]])
+  
+  J = jax.lax.map(jacfwd(fun), jnp.hstack((Xp1.reshape(-1,1), Xp2.reshape(-1,1), Xp3.reshape(-1,1))) )
+  return J
+    
 # define Chebyshev antiderivative evaluator
 def Gfun(x,a,b,nb):
 
@@ -223,6 +234,18 @@ def knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
   
   return T1,T2,T3,rho
 
+@jit
+def errFun(allx, allT, c,a1,b1,a2,b2,a3,b3):
+    N = allx.shape[0]//3
+    x1 = allx[:N]
+    x2 = allx[N:2*N]
+    x3 = allx[2*N:]
+
+    T1, T2, T3, rho = knothe3dcheb(x1, x2, x3, a1, b1, a2, b2, a3, b3,c)
+    return jnp.linalg.norm((allT - jnp.hstack((T1, T2, T3)) ))
+
+
+
 # define inverse Knothe transport function
 @jit
 def inv_knothe3dcheb(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
@@ -231,6 +254,18 @@ def inv_knothe3dcheb(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
   x2 = y2
   x3 = y3
   T1, T2, T3, rho = knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c)
+
+
+  '''
+  solver = jaxopt.GradientDescent(fun=errFun, maxiter=maxIter)
+  #solver = jaxopt.NonlinearCG(fun=errFun, method="polak-ribiere", maxiter=maxIter)
+  #solver = jaxopt.LBFGS(fun=errFun, maxiter=maxIter)
+  res = solver.run(jnp.hstack((T1,T2,T3)), jnp.hstack((y1,y2,y3)), c,a1,b1,a2,b2,a3,b3)      
+  N = y1.shape[0]
+  allS = res.params
+  return allS[:N], allS[N:2*N], allS[2*N:], 1./rho, 1
+  '''
+
   init_val = (x1,x2,x3,T1,T2,T3,rho,0)
   x1,x2,x3,T1,T2,T3,rho,iter = lax.while_loop(cond_fun, body_fun, init_val)
   return x1,x2,x3,1/rho,iter
@@ -260,8 +295,37 @@ def create_cond_and_body(y1,y2,y3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol):
 
   return body_fun, cond_fun
 
+@jit
+def flowJittable(x1, x2, x3, C, a1, b1, a2, b2,a3,b3,N):
+  T1 = x1
+  T2 = x2
+  T3 = x3
+  p = x1.shape[0]
+  J = jnp.ones(p)/p
+
+  N1, N2, N3 = C.shape[0], C.shape[1], C.shape[2]
+  cloop = 1.*C.reshape(N1, N2, N3, -1, 3).transpose([3,4,0,1,2])
+
+  def fun(carry, cn):
+    T1, T2, T3, J = carry[0], carry[1], carry[2], carry[3]
+
+    T1,T2,T3,rhofac = knothe3dcheb(T1,T2,T3,a1,b1,a2,b2,a3,b3,cn[0])
+    J = J * rhofac
+
+    T3,T1,T2,rhofac = knothe3dcheb(T3,T1,T2,a3,b3,a1,b1,a2,b2,jnp.transpose(cn[1],(2,0,1)))
+    J = J * rhofac
+
+    T2,T3,T1,rhofac = knothe3dcheb(T2,T3,T1,a2,b2,a3,b3,a1,b1,jnp.transpose(cn[2],(1,2,0)))
+    J = J * rhofac
+
+    J = J / jnp.sum(J)
+    return (T1, T2, T3, J), 0.
+
+  carry, _ = jax.lax.scan(fun, (T1,T2,T3,J),cloop)
+  return carry[0], carry[1], carry[2], carry[3]
 
 # Define function that evaluates flow map and Jacobian of input
+#@jit
 def flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,N):
   T1 = x1
   T2 = x2
@@ -281,7 +345,8 @@ def flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,N):
   return T1,T2,T3,J
 
 # Define function that evaluates flow map and Jacobian of input
-def inv_flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,N, maxIter,alpha,tol):
+#@jit
+def inv_flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,N, maxIter=maxIter,alpha=alpha,tol=tol):
   T1 = x1
   T2 = x2
   T3 = x3
@@ -300,8 +365,98 @@ def inv_flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,N, maxIter,alpha,tol):
   return T1,T2,T3,Jinv
 
 
-#@title Learn the transport
+def LearnTransportInverse(nb1, nb2, nb3, mf, N, shift):
+    a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]
 
+    C = jnp.zeros((nb1,nb2,nb3,N),dtype=jnp.complex128)
+
+    ng1, ng2, ng3 = nb1, nb2, nb3
+    #ng1, ng2, ng3 = 3*nb1//2, 3*nb2//2, 3*nb3//2
+
+
+    # define Gauss quadrature grid
+    u1 = jnp.linspace(0,ng1-1,ng1)/ng1
+    xg1 = a1 + (b1-a1)*u1
+    u2 = jnp.linspace(0,ng2-1,ng2)/ng2
+    xg2 = a2 + (b2-a2)*u2
+    u3 = jnp.linspace(0,ng3-1,ng3)/ng3
+    xg3 = a3 + (b3-a3)*u3
+
+    X1 = jnp.repeat(jnp.repeat(jnp.reshape(xg1,(ng1,1,1)),ng2,axis=1),ng3,axis=2)
+    X2 = jnp.repeat(jnp.repeat(jnp.reshape(xg2,(1,ng2,1)),ng1,axis=0),ng3,axis=2)
+    X3 = jnp.repeat(jnp.repeat(jnp.reshape(xg3,(1,1,ng3)),ng1,axis=0),ng2,axis=1)
+
+    Xg1 = jnp.reshape(X1,ng1*ng2*ng3)
+    Xg2 = jnp.reshape(X2,ng1*ng2*ng3)
+    Xg3 = jnp.reshape(X3,ng1*ng2*ng3)
+
+    gX1 = gfun(Xg1,a1,b1,nb1)
+    gX2 = gfun(Xg2,a2,b2,nb2)
+    gX3 = gfun(Xg3,a3,b3,nb3)
+
+
+    Tg1, Tg2, Tg3 = Xg1, Xg2, Xg3
+
+  # evaluate Chebyshev polynomials on quadrature grid
+    g1 = gfun(xg1,a1,b1,nb1)
+    g2 = gfun(xg2,a2,b2,nb2)
+    g3 = gfun(xg3,a3,b3,nb3)
+
+    S = 1
+
+    for megaIter in range(25):
+      Tg1prev, Tg2prev, Tg3prev = Tg1, Tg2, Tg3
+
+      itervec = jnp.zeros(N-1)
+
+      f = 1./rhorootfun(Tg1,Tg2,Tg3,mf,N,0.)
+      F = jnp.reshape(f,(ng1,ng2,ng3))
+
+      print("Maximum relative fitting error per flow step:")
+      for n in range(N):
+        c = chebfit(F,g1,g2,g3,S)
+
+        ffit = jnp.einsum('abc,ia,ib,ic->i',c,gX1,gX2,gX3)
+        Ffit = jnp.reshape(ffit,(ng1,ng2,ng3))
+        Fhat = F/jnp.sum(F)
+        Ffithat = Ffit/jnp.sum(Ffit)
+        print(jnp.max(jnp.abs(Ffithat-Fhat))/jnp.max(Fhat))
+
+        c = c/jnp.linalg.norm(c)
+        C = C.at[:,:,:,n].set(c)
+
+        if n<N-1:
+          if jnp.mod(n,3)==0:
+            Z1,Z2,Z3,_,iter = inv_knothe3dcheb(Xg1,Xg2,Xg3,a1,b1,a2,b2,a3,b3,c,maxIter,alpha,tol)
+          elif jnp.mod(n,3)==1:
+            Z3,Z1,Z2,_,iter = inv_knothe3dcheb(Xg3,Xg1,Xg2,a3,b3,a1,b1,a2,b2,jnp.transpose(c,(2,0,1)),maxIter,alpha,tol)
+          else:
+            Z2,Z3,Z1,_,iter = inv_knothe3dcheb(Xg2,Xg3,Xg1,a2,b2,a3,b3,a1,b1,jnp.transpose(c,(1,2,0)),maxIter,alpha,tol)
+          itervec = itervec.at[n].set(iter)
+          gZ1 = gfun(Z1,a1,b1,nb1)
+          gZ2 = gfun(Z2,a2,b2,nb2)
+          gZ3 = gfun(Z3,a3,b3,nb3)
+          f = jnp.einsum('abc,ia,ib,ic->i',c,gZ1,gZ2,gZ3)
+          F = jnp.reshape(f,(ng1,ng2,ng3))
+
+      Tg1,Tg2,Tg3,_ = flow(Xg1,Xg2,Xg3,C,a1,b1,a2,b2,a3,b3,N)
+
+      print("")
+      print("Number of fixed-point iterations for inversion at each flow step:")
+      print(itervec.astype(int))
+
+      T1err = jnp.linalg.norm(Tg1-Tg1prev)/jnp.linalg.norm(Tg1prev)
+      T2err = jnp.linalg.norm(Tg2-Tg2prev)/jnp.linalg.norm(Tg2prev)
+      T3err = jnp.linalg.norm(Tg3-Tg3prev)/jnp.linalg.norm(Tg3prev)
+      print(T1err, T2err, T3err)
+      if (max(T1err, T2err, T3err) < tol):
+        break
+    
+    return C
+
+
+
+#@title Learn the transport
 def LearnTransport(nb1, nb2, nb3, mf, N, shift):
     a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]
 
@@ -369,7 +524,8 @@ def LearnTransport(nb1, nb2, nb3, mf, N, shift):
             F = jnp.reshape(f,(ng1,ng2,ng3))
     return C
 
-def Plot2DTransport(C, np1, np2, z, mf):
+
+def Plot2DTransportInverseFit(C, np1, np2, z, mf):
     a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]
     N = C.shape[-1]
 
@@ -383,8 +539,32 @@ def Plot2DTransport(C, np1, np2, z, mf):
     Xp3 = z*jnp.ones(np1*np2)
 
     # compute forward and inverse transport of uniform grid
-    T1,T2,T3,_ = flow(Xp1,Xp2,Xp3,C,a1,b1,a2,b2,a3,b3,N)
-    S1,S2,S3,_ = inv_flow(Xp1,Xp2,Xp3,C,a1,b1,a2,b2,a3,b3,N,maxIter,alpha,tol)
+    T1,T2,T3,Jfit = flow(Xp1,Xp2,Xp3,C,a1,b1,a2,b2,a3,b3,N)
+    S1,S2,S3,Jfit = inv_flow(Xp1,Xp2,Xp3,C,a1,b1,a2,b2,a3,b3,N, maxIter, alpha, tol)
+
+    #'''
+    rho = rhofun_fake(Xp1, Xp2, Xp3, mf, 0.)    
+    Idx = jnp.argmax(rho)
+    norm = rho[Idx]/Jfit[Idx]
+    print("error in fit ", jnp.max(jnp.abs(rho - Jfit*norm)))
+
+    #def fun(X):
+    #  T1, T2, T3, _ = flowJittable(X[:1], X[1:2], X[2:], C,a1,b1,a2,b2,a3,b3,N)
+    #  return jnp.asarray([T1[0], T2[0], T3[0]])
+    
+    #J = jax.lax.map(jacfwd(fun), jnp.hstack((Xp1.reshape(-1,1), Xp2.reshape(-1,1), Xp3.reshape(-1,1))) )
+    #'''
+
+    
+    #S1,S2,S3,_ = inv_flow(Xp1,Xp2,Xp3,C,a1,b1,a2,b2,a3,b3,N,maxIter,alpha,tol)
+
+    t1, t2, t3, _ = flow(S1, S2, S3, C, a1, b1, a2, b2, a3, b3, N)
+    err1 = jnp.max(jnp.abs(t1-Xp1))#/(b1-a1)
+    err2 = jnp.max(jnp.abs(t2-Xp2))#/(b2-a2)
+    err3 = jnp.max(jnp.abs(t3-Xp3))#/(b3-a3)
+    
+    print("error in inverse", err1, err2, err3)
+
 
     # plot
     print("Forward transport image points:")
@@ -400,7 +580,99 @@ def Plot2DTransport(C, np1, np2, z, mf):
     plt.show()
 
 
+    #'''
+    ##plot 1d and compare to exact
+    xp1 = jnp.linspace(a1,b1,100)
+    xp2 = z*jnp.ones(100)
+    xp3 = z*jnp.ones(100)
+    #T1,T2,T3,Jfit = flow(xp1,xp2,xp3,C,a1,b1,a2,b2,a3,b3,N)
+    S1,S2,S3,Jfit= inv_flow(xp1,xp2,xp3,C,a1,b1,a2,b2,a3,b3,N,maxIter,alpha,tol)
+    rho = rhofun_fake(xp1, xp2, xp3, mf, 0.)
+    norm = jnp.mean(rho/Jfit)
+    plt.plot(xp1, rho, label="real")
+    plt.plot(xp1, norm*Jfit, label="fit")
+    plt.legend()
+    plt.show()
+        
+    #plt.plot(S1, rho-norm*Jfit,'--')
+    #plt.plot(xp1, rho-norm*Jfit, 'o-')
+    plt.show()
+    #'''
 
+
+def Plot2DTransport(C, np1, np2, z, mf):
+    a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]
+    N = C.shape[-1]
+
+    # define uniform plotting grid
+    xp1 = jnp.linspace(a1,b1,np1)
+    xp2 = jnp.linspace(a2,b2,np2)
+    X1 = jnp.repeat(jnp.reshape(xp1,(np1,1)),np2,axis=1)
+    X2 = jnp.repeat(jnp.reshape(xp2,(1,np2)),np1,axis=0)
+    Xp1 = jnp.reshape(X1,np1*np2)
+    Xp2 = jnp.reshape(X2,np1*np2)
+    Xp3 = z*jnp.ones(np1*np2)
+
+    # compute forward and inverse transport of uniform grid
+    T1,T2,T3,Jfit = flow(Xp1,Xp2,Xp3,C,a1,b1,a2,b2,a3,b3,N)
+
+
+    #'''
+    rho = rhofun_fake(Xp1, Xp2, Xp3, mf, 0.)    
+    Idx = jnp.argmax(rho)
+    norm = rho[Idx]/Jfit[Idx]
+    print("error in fit ", jnp.max(jnp.abs(rho - Jfit*norm)))
+
+    def fun(X):
+      T1, T2, T3, _ = flowJittable(X[:1], X[1:2], X[2:], C,a1,b1,a2,b2,a3,b3,N)
+      return jnp.asarray([T1[0], T2[0], T3[0]])
+    
+    J = jax.lax.map(jacfwd(fun), jnp.hstack((Xp1.reshape(-1,1), Xp2.reshape(-1,1), Xp3.reshape(-1,1))) )
+    #'''
+
+    
+    S1,S2,S3,_ = inv_flow(Xp1,Xp2,Xp3,C,a1,b1,a2,b2,a3,b3,N,maxIter,alpha,tol)
+
+    t1, t2, t3, _ = flow(S1, S2, S3, C, a1, b1, a2, b2, a3, b3, N)
+    err1 = jnp.max(jnp.abs(t1-Xp1))#/(b1-a1)
+    err2 = jnp.max(jnp.abs(t2-Xp2))#/(b2-a2)
+    err3 = jnp.max(jnp.abs(t3-Xp3))#/(b3-a3)
+    
+    print("error in inverse", err1, err2, err3)
+
+
+    # plot
+    print("Forward transport image points:")
+    fig, ax = plt.subplots()
+    ax.scatter(T1,T2)
+    #ax.set_box_aspect(1)
+    plt.show()
+    print("")
+    print("Inverse transport image points:")
+    fig, ax = plt.subplots()
+    ax.scatter(S1,S2)
+    #ax.set_box_aspect(1)
+    plt.show()
+
+
+    #'''
+    ##plot 1d and compare to exact
+    xp1 = jnp.linspace(a1,b1,100)
+    xp2 = z*jnp.ones(100)
+    xp3 = z*jnp.ones(100)
+    T1,T2,T3,Jfit = flow(xp1,xp2,xp3,C,a1,b1,a2,b2,a3,b3,N)
+    S1,S2,S3,_ = inv_flow(xp1,xp2,xp3,C,a1,b1,a2,b2,a3,b3,N,maxIter,alpha,tol)
+    rho = rhofun_fake(xp1, xp2, xp3, mf, 0.)
+    norm = jnp.mean(rho/Jfit)
+    plt.plot(xp1, rho, label="real")
+    plt.plot(xp1, norm*Jfit, label="fit")
+    plt.legend()
+    plt.show()
+    
+    #plt.plot(S1, rho-norm*Jfit,'--')
+    #plt.plot(xp1, rho-norm*Jfit, 'o-')
+    plt.show()
+    #'''
 def fitFourier(mf, ng1, ng2, ng3, C):
   #a1,b1,a2,b2,a3,b3 = 0.,1,0.,1,0.,1
   a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]

@@ -67,16 +67,29 @@ def forwardFlow(invFlow, y):
     return X
 
 
-def getStructureFactor(nbas, invFlow, flowJac, invFlowSinglePoint, JacAllSinglePoint, cell):
+def getStructureFactor(nbas, flow, Jacfun, invflow, cell):
 
     nucPos = np.asarray([cell._env[cell._atm[i,1]:cell._atm[i,1]+3] for i in range(cell._atm.shape[0])])
 
-    Tc = forwardFlow(invFlowSinglePoint, nucPos)
+    Tx, Ty, Tz, Jac = flow(nucPos[:,0], nucPos[:,1], nucPos[:,2])
+    Tc = np.hstack((Tx, Ty, Tz))
+    Tc = Tc.reshape(-1,3)
+
+    ##check error
+    t1, t2, t3, _ = invflow(Tx, Ty, Tz)
+    err1 = jnp.max(jnp.abs(t1-nucPos[:,0]))#/(b1-a1)
+    err2 = jnp.max(jnp.abs(t2-nucPos[:,1]))#/(b2-a2)
+    err3 = jnp.max(jnp.abs(t3-nucPos[:,2]))#/(b3-a3)
+    
+    print("Error in nuclear fit ", err1, err2, err3)
+
+
+    #Tc = forwardFlow(invFlowSinglePoint, nucPos)
     density = np.zeros((nbas,), dtype=complex)
 
     Jac = np.zeros((Tc.shape[0],))    
     for i in range(Tc.shape[0]):
-        Jac[i] = np.linalg.det(JacAllSinglePoint(nucPos[i,0], nucPos[i,1], nucPos[i,2]))
+        Jac[i] = np.linalg.det(Jacfun(Tx, Ty, Tz))
 
     basex, basey, basez = cell.get_Gv_weights(cell.mesh)[1]
     b = cell.reciprocal_vectors()
@@ -617,18 +630,26 @@ def optimizeFourier(L, nmesh, Fx, Fy, Fz, nx, ny, nz, gx, gy, gz, alpha, m, cent
     #print(error)
     return error
             
-def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint, ACE = True, productGrid = False, eps = 1.e-6):
+def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6):
     A = cell.lattice_vectors()
     a1,b1,a2,b2,a3,b3 = 0.,A[0,0],0.,A[1,1],0.,A[2,2]
 
     grid = cell.get_uniform_grids(nmesh)
     basgrid = cell.get_uniform_grids(basMesh)
     
+    '''
+    dx, dy, dz, _ = invFlow(grid[:,0], grid[:,1], grid[:,2])
+    Jac = Jacfun(dx, dy, dz)
+    Jac = np.asarray([np.linalg.inv(Ji) for Ji in Jac])
+    distortedGrid = jnp.hstack((dx, dy, dz))
+    JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
+    '''
 
-    if (not productGrid):
-        distortedGrid = invFlow(grid)
-    else:
-        distortedGrid = invFlow(nmesh)
+    dx, dy, dz, _ = invFlow(grid[:,0], grid[:,1], grid[:,2])
+    Jac = Jacfun(grid[:,0], grid[:,1], grid[:,2])
+    Jac = np.asarray([np.linalg.inv(Ji) for Ji in Jac])
+    JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
+    distortedGrid = jnp.hstack((dx.reshape(-1,1), dy.reshape(-1,1), dz.reshape(-1,1)))
     
     ngrid, nbas = np.prod(nmesh), np.prod(basMesh)
     G = get_Gv(nmesh, cell)
@@ -636,14 +657,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, invFlowSinglePoint, JacAllS
 
     t0 = time.time()
 
-
-    if (not productGrid):
-        JacAll = JacAllFun(distortedGrid)
-    else:
-        JacAll = JacAllFun(nmesh)
         
-    Jac = JacAll[:,:3]     #J
-    JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
 
     
     from scipy.sparse.linalg import LinearOperator    
@@ -690,12 +704,11 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, invFlowSinglePoint, JacAllS
         nucPot = getNuclearPotDenseGrid(denseMesh, nbas, nucPos, cell._atm[:,0], \
             invFlow, JacAllFun, cell, productGrid) * JacDet**0.5
     else:
-        nucDensity = getStructureFactor(nbas, invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint, cell).real
+        nucDensity = getStructureFactor(nbas, flow, Jacfun, invFlow, cell).real
         nucPot = V2e(nucDensity, 0.*nucDensity, 1.e-6).real #* nbas/cell.vol
     #nucPot = getNuclearPotDenseGridNoDiagonal(denseMesh, nbas, nucPos, cell._atm[:,0], \
     #    invFlow, JacAllFun, cell, productGrid) 
         
-
 
     #'''
     N1 = mf.with_df.get_pp()
@@ -712,7 +725,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, JacAllFun, invFlowSinglePoint, JacAllS
         K[i] = jnp.einsum('g,gi->i', kao/JacDet**0.5, ao) * cell.vol/nbas 
          
     print(" nuc  ", (N-N1).max())  
-    print(" kin  ", (K-K1).max())  
+    print(" kin  ", (K-K1).max(), np.unravel_index(abs(K-K1).argmax(), K.shape))  
     print(" ovlp ", (S-S1).max())  
 
     nocc = cell.nelectron//2
