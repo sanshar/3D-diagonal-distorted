@@ -1,7 +1,7 @@
 from pyscf.pbc import gto as pgto
 from pyscf.pbc import df as pdf
 from pyscf import gto
-import numpy, pyscf, HF, scipy, HF2, HF3, HF4, Distort, Distort2, scipy, HFdirect, temp, Distort3, HFdirect2
+import numpy, pyscf, scipy, scipy, HFdirect
 import KnotheTransport, KnotheTransportPeriodic
 import numpy as np
 from pyscf.pbc.dft import multigrid
