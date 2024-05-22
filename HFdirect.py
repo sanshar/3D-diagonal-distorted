@@ -72,11 +72,12 @@ def getStructureFactor(nbas, flow, Jacfun, invflow, cell):
     nucPos = np.asarray([cell._env[cell._atm[i,1]:cell._atm[i,1]+3] for i in range(cell._atm.shape[0])])
 
     Tx, Ty, Tz, Jac = flow(nucPos[:,0], nucPos[:,1], nucPos[:,2])
-    Tc = np.hstack((Tx, Ty, Tz))
+    Tc = np.vstack((Tx, Ty, Tz)).T
     Tc = Tc.reshape(-1,3)
 
+    
     ##check error
-    t1, t2, t3, _ = invflow(Tx, Ty, Tz)
+    t1, t2, t3, _ = invflow(Tc[:,0], Tc[:,1], Tc[:,2])
     err1 = jnp.max(jnp.abs(t1-nucPos[:,0]))#/(b1-a1)
     err2 = jnp.max(jnp.abs(t2-nucPos[:,1]))#/(b2-a2)
     err3 = jnp.max(jnp.abs(t3-nucPos[:,2]))#/(b3-a3)
@@ -87,9 +88,9 @@ def getStructureFactor(nbas, flow, Jacfun, invflow, cell):
     #Tc = forwardFlow(invFlowSinglePoint, nucPos)
     density = np.zeros((nbas,), dtype=complex)
 
-    Jac = np.zeros((Tc.shape[0],))    
-    for i in range(Tc.shape[0]):
-        Jac[i] = np.linalg.det(Jacfun(Tx, Ty, Tz))
+    #Jac = np.zeros((Tc.shape[0],))    
+    #for i in range(Tc.shape[0]):
+    #    Jac[i] = np.linalg.det(Jacfun(Tx, Ty, Tz))
 
     basex, basey, basez = cell.get_Gv_weights(cell.mesh)[1]
     b = cell.reciprocal_vectors()
