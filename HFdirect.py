@@ -3,7 +3,7 @@ import numpy as np
 from diis import FDiisContext
 import matplotlib.pyplot as plt
 from jax import grad, jit, vmap, jacfwd, jacrev
-import finufft, FFTInterpolation, Davidson
+import FFTInterpolation, Davidson
 import ctypes, numpy, time
 from jax import numpy as jnp
 

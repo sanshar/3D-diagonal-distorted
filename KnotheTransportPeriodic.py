@@ -59,6 +59,7 @@ def rhofun(x1,x2,x3, mf, shift):
   Zi = atoms[:,0]
   
   density = 0
+  #'''
   for a in range(Zi.shape[0]):
     pos = mf.mol._env[atoms[a,1]:atoms[a,1]+3]
 
@@ -98,7 +99,7 @@ def rhofun(x1,x2,x3, mf, shift):
 
   #rho = jnp.exp(-3.*(0.5**2 + (xx1)**2 + (xx2)**2 + (xx3)**2)**0.5)/jnp.exp(-1.5)/(0.5**2 + (xx1)**2 + (xx2)**2 + (xx3)**2 )**0.5 + 1.0
   #rho = jnp.exp(-0.9 * ((xx1)**2 + (xx2)**2 + (xx3)**2))/(0.05**2 + (xx1)**2 + (xx2)**2 + (xx3)**2 )**0.5  + 1.e-1 #+ 1.0
-  return rho
+  #return rho
 
   nelec = mf.cell.nelectron
 
@@ -112,8 +113,9 @@ def rhofun(x1,x2,x3, mf, shift):
 
   
   mo = np.einsum('ab,ra->br', moCoeff, ao)
-
-  density = np.einsum('ar,ar->r', mo, mo)   + shift
+  moe = mf.mo_energy[:nelec//2].real
+  moe = abs(moe/moe[0])
+  density = np.einsum('a, ar,ar->r', abs(moe), mo, mo)   + 0.01
 
   #density = np.ones((mo.shape[1],))
   return density
