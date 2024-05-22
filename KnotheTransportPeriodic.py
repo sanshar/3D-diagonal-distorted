@@ -4,7 +4,7 @@ import os
 os.environ['JAX_ENABLE_X64'] = 'True'
 os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=6'
 os.environ['JAX_PLATFORM_NAME'] = 'cpu'
-os.environ['JAX_DISABLE_JIT'] = 'True'
+#os.environ['JAX_DISABLE_JIT'] = 'True'
 from jax import numpy as jnp
 from jax import scipy as jsp
 from jax import value_and_grad, vmap, lax, jit, random, jacfwd, jacrev
@@ -53,7 +53,8 @@ def rhofun_fake(x1, x2, x3, mf, shift):
 # specify density
 #jit
 def rhofun(x1,x2,x3, mf, shift):
-
+  A = mf.cell.lattice_vectors()
+  b1, b2, b3 = A[0,0], A[1,1], A[2,2]
   atoms = mf.mol._atm
   Zi = atoms[:,0]
   
@@ -64,21 +65,24 @@ def rhofun(x1,x2,x3, mf, shift):
     #xx1, xx2, xx3 = Zi[a]*(x1-pos[0]), Zi[a]*(x2-pos[1]), Zi[a]*(x3-pos[2])
     #density += 1/(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5
 
-    xx1, xx2, xx3 = (x1-pos[0]), (x2-pos[1]), (x3-pos[2])
-    #density += 1/(xx1**2 + xx2**2 + xx3**2 + (0.1/Zi[a])**2)**0.5
+    for n1 in range(-1,2):
+      for n2 in range(-1,2):
+        for n3 in range(-1,2):
+          xx1, xx2, xx3 = (x1-pos[0]+n1*b1), (x2-pos[1]+n2*b2), (x3-pos[2]+n3*b3)
+          #density += 1/(xx1**2 + xx2**2 + xx3**2 + (0.1/Zi[a])**2)**0.5
 
-    #density += 1./((xx1**2 + (0.5/Zi[a])**2)/(xx2**2 + (0.5/Zi[a])**2)/(xx3**2 + (0.5/Zi[a])**2))**0.5
-    #density += 1./((xx1**2 + (0.5/Zi[a])**2)*(xx2**2 + (0.5/Zi[a])**2)*(xx3**2 + (0.5/Zi[a])**2))**0.5
+          #density += 1./((xx1**2 + (0.5/Zi[a])**2)/(xx2**2 + (0.5/Zi[a])**2)/(xx3**2 + (0.5/Zi[a])**2))**0.5
+          #density += 1./((xx1**2 + (0.5/Zi[a])**2)*(xx2**2 + (0.5/Zi[a])**2)*(xx3**2 + (0.5/Zi[a])**2))**0.5
 
-    r = (xx1**2 + xx2**2 + xx3**2)**0.5
-    density += (jsp.special.erf((r+1e-6) * Zi[a] / 0.1) - jsp.special.erf((r+1e-6) /2.))/(r+1e-6) + 0.05
+          r = (xx1**2 + xx2**2 + xx3**2)**0.5
+          density += (jsp.special.erf((r+1e-6) * Zi[a] / 0.1) - jsp.special.erf((r+1e-6) /2.))/(r+1e-6) 
 
-    #density += (jsp.special.erf((xx1+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx1+1e-6) /1.))/(xx1+1e-6) + 0.05**(1./3) \
-    #  * (jsp.special.erf((xx2+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx2+1e-6) /1.))/(xx2+1e-6) + 0.05**(1./3) \
-    #  * (jsp.special.erf((xx3+1e-6) * Zi[a] / 0.5) - jsp.special.erf((xx3+1e-6) /1.))/(xx3+1e-6) + 0.05**(1./3) 
+    #density += (jsp.special.erf((xx1+1e-6) * Zi[a] / 0.3) - jsp.special.erf((xx1+1e-6) /4.))/(xx1+1e-6) + 0.05**(1./3) \
+    #  * (jsp.special.erf((xx2+1e-6) * Zi[a] / 0.3) - jsp.special.erf((xx2+1e-6) /4.))/(xx2+1e-6) + 0.05**(1./3) \
+    #  * (jsp.special.erf((xx3+1e-6) * Zi[a] / 0.3) - jsp.special.erf((xx3+1e-6) /4.))/(xx3+1e-6) + 0.05**(1./3) 
 
     #density = 1.
-  return density 
+  return density + 0.03
   #return 1./mf.cell.vol
   #xx1, xx2, xx3 = x1-3, x2-3, x3-3.
   #return 1./(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5

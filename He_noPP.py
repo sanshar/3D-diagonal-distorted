@@ -14,9 +14,11 @@ for nG in range(ng0,200,4):
         #atom = '''Li 5.0 6.0 6.0
                 #H  8.0 6.0 6.0''',
                 #H    4.6 4.6 4.6''',#+gh,
-        atom = '''Be 4. 4. 4.''',
-        #atom = '''Be 1.666 1.666 1.666''',
-        #          Be 4.333 4.333 4.333''',
+        #atom = '''He 4. 4. 4.''',
+        #atom = '''He 1.666 1.666 1.666,
+        #          He 4.333 4.333 4.333''',
+        atom = '''He 1.666 1.666 4.0,
+                  He 4.333 4.333 4.0''',
         #He 3. 0. 0.''',
         #basis = "gth-qzv3p",
         #basis = "anorcc",
@@ -47,9 +49,9 @@ for nG in range(ng0,200,4):
         #mf = multigrid.multigrid(mf)
         #mf.kernel()
 
-        mf = pyscf.pbc.scf.RHF(cell, exxdiv=None).density_fit(auxbasis='weigend')
+        mf = pyscf.pbc.scf.RHF(cell, exxdiv=None).rs_density_fit(auxbasis='weigend')
         mf.kernel()
-
+        #exit(0)
         #exit(0)
         #C = KnotheTransport.LearnTransport(15, 15, 15, mf, 12)
 
@@ -58,12 +60,25 @@ for nG in range(ng0,200,4):
         #C = KnotheTransportPeriodic.LearnTransport(16, 16, 16, mf, 15, 0.0)
         #KnotheTransportPeriodic.Plot2DTransport(C, 25, 25, 5., mf)
 
-        C = KnotheTransportPeriodic.LearnTransportInverse(16, 16, 16, mf, 15, 0.0)
-        np.save("fullC", C)
-        #C = np.load("fullC.npy").reshape(10,10,10,-1)
+        #C = KnotheTransportPeriodic.LearnTransportInverse(20, 20, 20, mf, 15, 0.0)
+        #np.save("fullC", C)
+        C = np.load("fullC.npy").reshape(20,20,20,-1)
         #print("Solving done")
-        KnotheTransportPeriodic.Plot2DTransportInverseFit(C, 25, 25, 4., mf)
+        #KnotheTransportPeriodic.Plot2DTransportInverseFit(C, 25, 25, 4., mf)
         
+        '''
+        a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]
+        Tx = np.linspace(a1, b1, 50)
+        Ty = Tx
+        Tz = 4.*np.ones((50,))
+        Sx, Sy, Sz, _ = KnotheTransportPeriodic.inv_flow(Tx, Ty, Tz, C, a1, b1, a2, b2, a3, b3, C.shape[-1])
+
+        import matplotlib.pyplot as plt
+        plt.plot(Tx, Sx, 'o')
+        plt.show()
+        import pdb
+        pdb.set_trace()
+        '''        
         #Fx, Fy, Fz = KnotheTransportPeriodic.fitFourier(mf, 50, 50, 50, C)
         #print("Fitting done")
         
