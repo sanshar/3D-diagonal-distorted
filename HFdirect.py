@@ -3,7 +3,7 @@ import numpy as np
 from diis import FDiisContext
 import matplotlib.pyplot as plt
 from jax import grad, jit, vmap, jacfwd, jacrev
-import FFTInterpolation, Davidson
+import FFTInterpolation, Davidson, functools
 import ctypes, numpy, time
 from jax import numpy as jnp
 
@@ -676,7 +676,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
 
     v0 = 1./JacDet**0.5
     v0 = v0/np.linalg.norm(v0)
-    def V2e(vec, guess, tol=1.e-10):
+    def V2e(vec, guess, tol=1.e-12):
         vec2 = vec*JacDet**0.5
         
         vec2 = vec2 - vec2.dot(v0) * v0
@@ -706,7 +706,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
             invFlow, JacAllFun, cell, productGrid) * JacDet**0.5
     else:
         nucDensity = getStructureFactor(nbas, flow, Jacfun, invFlow, cell).real
-        nucPot = V2e(nucDensity, 0.*nucDensity, 1.e-6).real #* nbas/cell.vol
+        nucPot = V2e(nucDensity, 0.*nucDensity).real #* nbas/cell.vol
     #nucPot = getNuclearPotDenseGridNoDiagonal(denseMesh, nbas, nucPos, cell._atm[:,0], \
     #    invFlow, JacAllFun, cell, productGrid) 
         
@@ -794,7 +794,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
 
     aceOrbs = makeACE(orbs, V2e, nbas/cell.vol)    
     density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
-    j = V2e(density.real, 0.*G2, 1.e-10) * nbas/cell.vol
+    j = V2e(density.real, 0.*G2) * nbas/cell.vol
     #Ho = FC(orbs, j, aceOrbs, True)
     Ht, Hn, Hj, Hk = 0.*orbs, 0.*orbs, 0.*orbs, 0.*orbs
 
@@ -816,7 +816,9 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     print("Exc  Error {0:14.8f}".format( np.einsum('ig,ig', orbs, Hk) - kmo.diagonal().sum()/2.))
     Energy = 2*np.einsum('ig,ig', orbs, Ht) + 2*np.einsum('ig,ig', orbs, Hn) + np.einsum('ig,ig', orbs, Hj) - np.einsum('ig,ig', orbs, Hk) + nuclearPotential    
     print("{0:14.8f}  {1:14.8f} {2:14.8f}".format(Energy, mf.e_tot, Energy-mf.e_tot))
-    
+    BetterEnergy = 2*np.einsum('ag,ab,bg', mocoeff[:,:nocc], K1, mocoeff[:,:nocc]) + 2*np.einsum('ag,ab,bg', mocoeff[:,:nocc], N1, mocoeff[:,:nocc])  + np.einsum('ig,ig', orbs, Hj) - np.einsum('ig,ig', orbs, Hk) + nuclearPotential 
+    print("BestGuess (distroted Sinc DF) {0:14.8f}".format(BetterEnergy))
+
     #orbs = moVal*(cell.vol/nbas)**0.5
     #orbs = np.einsum('gi,ij,g->jg', ao, mocoeff[:,:1], 1./JacDet**0.5) * (cell.vol/nbas)**0.5 #(ao.dot(mocoeff[:,:1])/JacDet**0.5).T
     #Ho = FC(orbs, j, orbs) if not ACE else FC(orbs, j, aceOrbs, True)
@@ -835,7 +837,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
             aceOrbs = makeACE(orbs, V2e, nbas/cell.vol)
             
         density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
-        j = V2e(density.real, 0.*G2, 1.e-10) * nbas/cell.vol
+        j = V2e(density.real, 0.*G2) * nbas/cell.vol
         
         outerEold = Energy
         from pyscf.lib.diis import DIIS    
@@ -855,7 +857,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
             
             density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
             oldj = 1.*j
-            j = V2e(density, j/(nbas/cell.vol)/4./np.pi, 1.e-10) * nbas/cell.vol
+            j = V2e(density, j/(nbas/cell.vol)/4./np.pi) * nbas/cell.vol
             
             error = j - oldj
             
@@ -886,6 +888,158 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
             aceOrbs = makeACE(orbs, V2e, nbas/cell.vol)
 
         
+
+    return Energy.real , orbs 
+
+
+def get_transformation_matrix(S, lin_dep_thresh):
+    #Diagonalize the overlap matrix S to obtain the transformation matrix X
+    Seigval,Sorbs = numpy.linalg.eigh(S)
+    emin = Seigval[-1]*lin_dep_thresh
+    X = Sorbs[:,Seigval>emin]
+    w = Seigval[Seigval>emin]
+
+    numpy.sqrt(w, out=w)
+    w[:] = 1./w
+    X = X*w
+    return X
+
+def getOrbs(X, Fock):
+
+    Fockk = X.conj().T.dot(Fock.dot(X))
+    e, orbsk = numpy.linalg.eigh(Fockk)
+    e = e.real
+    mo = X.dot(orbsk) # Don't use this for anything rn.
+
+    return mo, e
+
+def occRI(moorbs,S,Koa,Koo):
+    Sa = np.dot(S, moorbs.T)
+    tmp = np.dot(Sa, Koa)
+    Kuv = tmp
+    Kuv += tmp.T 
+    np.dot(Koo, Sa.T, Koa)
+    Kuv -= np.dot(Sa, Koa)
+    return Kuv
+
+def getE(Hx, dm, CoreH, nuc):
+    energy = numpy.einsum('ij,ij',Hx+CoreH, dm)
+    energy += nuc
+    return energy
+
+def HF_ISDF_DistrotedGrid(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6):
+    A = cell.lattice_vectors()
+    a1,b1,a2,b2,a3,b3 = 0.,A[0,0],0.,A[1,1],0.,A[2,2]
+
+    grid = cell.get_uniform_grids(nmesh)
+    basgrid = cell.get_uniform_grids(basMesh)
+    
+    dx, dy, dz, _ = invFlow(grid[:,0], grid[:,1], grid[:,2])
+    Jac = Jacfun(grid[:,0], grid[:,1], grid[:,2])
+    Jac = np.asarray([np.linalg.inv(Ji) for Ji in Jac])
+    JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
+    distortedGrid = jnp.hstack((dx.reshape(-1,1), dy.reshape(-1,1), dz.reshape(-1,1)))
+    
+    ngrid, nbas = np.prod(nmesh), np.prod(basMesh)
+    G = get_Gv(nmesh, cell)
+    G2 = np.einsum('gi,gi->g', G, G)
+
+    t0 = time.time()
+
+        
+
+    
+    from scipy.sparse.linalg import LinearOperator    
+    G2[0] = 1.
+    Hvop2   = LinearOperator((nbas, nbas), matvec = lambda v: Hv2(v, JacDet, Jac, basMesh, G))        
+    preCond = LinearOperator((nbas, nbas), matvec = lambda v: Condition(v, G2, basMesh))
+    printNorm = lambda v : print(np.linalg.norm(v))
+
+    v0 = 1./JacDet**0.5
+    v0 = v0/np.linalg.norm(v0)
+
+    
+
+    v0 = 1./JacDet**0.5
+    v0 = v0/np.linalg.norm(v0)
+    def V2e(vec, guess, tol=1.e-12):
+        vec2 = vec*JacDet**0.5
+        
+        vec2 = vec2 - vec2.dot(v0) * v0
+        #pot, info = scipy.sparse.linalg.cg(Hvop2, vec2, x0=guess, M=preCond, callback=printNorm, tol = tol**0.5/np.linalg.norm(vec2), atol=tol**0.5)
+        pot, info = scipy.sparse.linalg.cg(Hvop2, vec2, x0=guess, M=preCond, tol = tol**0.5/np.linalg.norm(vec2), atol=tol**0.5)
+        if (info > 0):
+            print("conjugate gradient convergence not achieved!!!!!")
+            exit(0)
+
+        potout = pot - pot.dot(v0) * v0
+
+        #error = Hv2(potout, JacDet, Jac, basMesh, G) - vec2
+        #print("final error ", np.linalg.norm(error))
+        
+        potout = potout * JacDet**0.5
+        return potout.real * 4. * np.pi 
+        
+
+    N1 = mf.with_df.get_pp()
+    S1 = cell.pbc_intor('cint1e_ovlp_sph')
+    K1 = cell.pbc_intor('cint1e_kin_sph')
+    ao = cell.pbc_eval_gto('GTOval', distortedGrid)
+    ao = np.einsum('gi,g->ig', ao, 1/JacDet**0.5) * (cell.vol/nbas)**0.5
+    X = get_transformation_matrix(S1, 1.e-12)
+
+    nocc = cell.nelectron//2
+
+    nelec, nuclearPotential, nao = cell.nelectron, cell.energy_nuc(), N1.shape[0]
+        
+
+    CoreH = N1+K1
+    Fock = 1*CoreH
+    density, j = np.zeros((ao.shape[1],)), np.zeros((ao.shape[1],))
+    Energy = 0.
+    de = 1.e-6
+    t0 = time.time()
+    charge_convtol, convtol, de = 0.1, 1.e-6, 1.
+    
+    from pyscf.lib.diis import DIIS    
+    dc = DIIS()
+    dc.space = 10
+
+    for iter in range(20):
+        #dc = FDiisContext(10)
+
+        mo, _ = getOrbs(X, Fock)
+        orbs = mo[:,:nocc].T
+        dm = 2.* orbs.T.conj().dot(orbs)
+        moVal = orbs.dot(ao)
+
+        density = 2.*np.einsum('ig,ig->g', moVal, moVal)
+        j = V2e(density, j/(nbas/cell.vol)/4./np.pi) * nbas/cell.vol
+
+        #jao, kao = mf.get_jk(dm=dm)
+        Jop = jnp.einsum('ig,g,jg->ij', ao, j, ao) 
+        aceOrbs = makeACE(moVal, V2e, nbas/cell.vol)
+
+        Korb = 0.*moVal 
+        for i in range(orbs.shape[0]):
+            Korb[i] = ExACE(moVal[i], aceOrbs)
+
+        Kia, Kij = Korb.dot(ao.T), Korb.dot(moVal.T)
+        Kab = occRI(orbs,S1,Kia,Kij)
+
+        FockNew = Jop + CoreH - Kab
+        Energy = getE(FockNew, dm*0.5, CoreH, nuclearPotential)
+        error = (FockNew - Fock)
+        err_norm = numpy.linalg.norm(error)
+
+        converged = (err_norm < 1e-5*nao)
+        #print("Converged: ", time.time()-t0)
+        print("{0:>8d}  {1:>18.9f}  {2:>18.3e}  {3:8.2f}".format(iter, Energy, err_norm, (time.time() - t0)), flush=True)
+        if converged:
+            break
+        # t0 = time.time()
+        Fock = dc.update(FockNew, error)
+
 
     return Energy.real , orbs 
 
@@ -942,7 +1096,7 @@ def HFCheck(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, e
 
     v0 = 1./JacDet**0.5
     v0 = v0/np.linalg.norm(v0)
-    def V2e(vec, guess, tol=1.e-10):
+    def V2e(vec, guess, tol=1.e-12):
         vec2 = vec*JacDet**0.5
         
         vec2 = vec2 - vec2.dot(v0) * v0
@@ -1008,7 +1162,7 @@ def HFCheck(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, e
     JExact = moCoeff.T.conj().dot(CoulExact.dot(moCoeff))
     
     density = 2*np.einsum('ig,ig->g', mo, mo.conj())
-    Coul = V2e(density, 0.*density, tol=1.e-10) 
+    Coul = V2e(density, 0.*density) 
     print("Coulomb\n")
     J =   np.einsum('ar,r,br', mo.conj(), Coul, mo) * cell.vol/nbas
     print(JExact)
@@ -1103,7 +1257,7 @@ def HFCheck(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, e
         
         density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
         oldj = 1.*j
-        j = V2e(density, j/(nbas/cell.vol)/4./np.pi, max(1.e-10,davidsonTol)) * nbas/cell.vol
+        j = V2e(density, j/(nbas/cell.vol)/4./np.pi) * nbas/cell.vol
         
         error = j - oldj
         
@@ -1179,7 +1333,7 @@ def HFExact(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, e
 
     v0 = 1./JacDet**0.5
     v0 = v0/np.linalg.norm(v0)
-    def V2e(vec, guess, tol=1.e-10):
+    def V2e(vec, guess, tol=1.e-12):
         vec2 = vec*JacDet**0.5
         
         vec2 = vec2 - vec2.dot(v0) * v0
@@ -1279,7 +1433,7 @@ def HFExact(cell, basMesh, nmesh, mf, invFlow, JacAllFun, productGrid = False, e
         
         density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
         oldj = 1.*j
-        j = V2e(density, j/(nbas/cell.vol)/4./np.pi, max(1.e-10,davidsonTol)) * nbas/cell.vol
+        j = V2e(density, j/(nbas/cell.vol)/4./np.pi) * nbas/cell.vol
         
         error = j - oldj
         
