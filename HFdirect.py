@@ -687,11 +687,11 @@ def getPPVal(distortedGrid, cell, a, b):
     A = cell.lattice_vectors()
     a1,b1,a2,b2,a3,b3 = 0.,A[0,0],0.,A[1,1],0.,A[2,2]
 
-    eps = 1.e-10
+    eps = 1.e-12
     G1, G2, G3 = 2*np.pi/b1, 2*np.pi/b2, 2*np.pi/b3
     nmesh = np.asarray([12, 12, 12])
     #nmesh = np.asarray([8, 8, 8])
-    Gmin = nmesh[0] * min(G1, G2, G3)
+    Gmin = nmesh[0] * min(G1, G2, G3)/2.
     w = 1./2/(-np.log(eps/4/np.pi * Gmin**2)/Gmin**2)**0.5
 
     ##number of real space lattice summations
@@ -728,7 +728,7 @@ def getPPVal(distortedGrid, cell, a, b):
     g3 = np.exp(-1j * gz * distortedGrid[:,2])
 
     potR = jnp.einsum('ijk,ia,ja,ka->a', potG, g1, g2, g3).real 
-    const = -4*np.pi*ConstantTermPP(a, b, w, cell.atom_charges(), R)/cell.vol
+    const = -4*np.pi*ConstantTermPP(a, b, w, cell.atom_charges(), 3*R)/cell.vol
 
     potR = potR + const.sum()
     #'''
