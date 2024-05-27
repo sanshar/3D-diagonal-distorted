@@ -1,10 +1,12 @@
 import pyscf, time, scipy, Distort2, Distort3
 import numpy as np
+import scipy as sp
+import scipy.special
 from diis import FDiisContext
 import matplotlib.pyplot as plt
 from jax import grad, jit, vmap, jacfwd, jacrev
 import FFTInterpolation, Davidson, functools
-import ctypes, numpy, time
+import ctypes, numpy, time, KnotheTransportPeriodic
 from jax import numpy as jnp
 
 '''
@@ -630,11 +632,124 @@ def optimizeFourier(L, nmesh, Fx, Fy, Fz, nx, ny, nz, gx, gy, gz, alpha, m, cent
     error = jnp.linalg.norm(S-Smat)
     #print(error)
     return error
-            
-def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6):
+
+def ConstantTermPP(a, b, w, Z, Rcut):
+    R = Rcut*Z
+    ppTerm = (  (-4*a*(17 + 30*a*b*np.pi**0.5 + 9*a**2*b**2*np.pi)*R*np.exp(-2*a**2*R**2) - 48*a**3*(1 + a*b*np.pi**0.5)**2*R**3*np.exp(-2*a**2*R**2) - \
+         32*np.exp(-a**2*R**2)*np.pi**0.5*(3*a**4*(1 + a*b*np.pi**0.5)*R**3 + \
+            (2 + 3*a*b*np.pi**0.5)*(1 + a**2*R**2)*sp.special.erf(a*R)) + \
+         np.pi**0.5*(-16*a**3*np.pi**0.5*R**3 - 48*a**3*np.pi**0.5*R**2*sp.special.erf(a*R) + \
+            16*a**3*np.pi**0.5*R**3*sp.special.erf(a*R)**2 + \
+            2**0.5*(49 + 78*a*b*np.pi**0.5 + 9*a**2*b**2*np.pi)*sp.special.erf(2**0.5*a*R)))/(96.*a**3*np.pi) )
+    R = Rcut
+    erfTerm = -Z/4 * (2 * np.exp(-R**2 * w**2) * R / np.pi**0.5/ w + (2 * R**2 -1/w**2) * sp.special.erf(R*w))
+    return ppTerm/Z - erfTerm
+    
+def AllElectronPS(index):
+    if  (index == 1):
+        return 1, -3.6442293856e-01
+    elif (index == 2):
+        return 2, -1.9653418982e-01
+    elif (index == 3):
+        return 3, -1.3433604753e-01
+    elif (index == 4):
+        return 4, -1.0200558466e-01
+    elif (index == 5):
+        return 5, -8.2208091118e-02
+    elif (index == 6):
+        return 6, -6.8842555167e-02
+    elif (index == 7):
+        return 7, -5.9213652850e-02
+    elif (index == 8):
+        return 8, -5.1947028250e-02
+    elif (index == 9):
+        return 9, -4.6268559218e-02
+    elif (index == 10):
+        return 10, -4.1708913494e-02
+    elif (index == 11):
+        return  11, -3.7967227308e-02
+    elif (index == 12):
+        return  12, -3.4841573775e-02
+    else:
+        print(f"Error: index should be between 1 and 12, given {index}")
+        exit(0)
+
+
+def getAllElectronPPVal(r, a, b, Z):
+    x = Z * r + 1.e-8
+    h1x = - sp.special.erf(a * x) - 2 * (a**2 * b + a/np.pi**0.5) * x * np.exp(-a**2 * x**2)
+    h2x = (-2*a**2 * b - 4*a/np.pi**0.5 + ( 4 * a**4 * b + 4 * a**3 / np.pi**0.5) * x**2) * np.exp(-a **2 * x**2) 
+    val = Z**2 * (-1/2 + h1x / x + h1x**2 / 2 + h2x / 2.)
+    return val
+
+def getPPVal(distortedGrid, cell, a, b):
+    w = 2 ##error function parameter
     A = cell.lattice_vectors()
     a1,b1,a2,b2,a3,b3 = 0.,A[0,0],0.,A[1,1],0.,A[2,2]
 
+    eps = 1.e-10
+    G1, G2, G3 = 2*np.pi/b1, 2*np.pi/b2, 2*np.pi/b3
+    nmesh = np.asarray([12, 12, 12])
+    #nmesh = np.asarray([8, 8, 8])
+    Gmin = nmesh[0] * min(G1, G2, G3)
+    w = 1./2/(-np.log(eps/4/np.pi * Gmin**2)/Gmin**2)**0.5
+
+    ##number of real space lattice summations
+    R = sp.special.erfinv(1-eps)
+    nR = np.asarray([int(R/b1)+1, int(R/b2)+1, int(R/b3)+1])
+
+    G = get_Gv(nmesh, cell) ##get the fourier mesh
+    G2 = np.einsum('gi,gi->g', G, G)
+
+    erfG = 0.*G2
+    erfG[1:] = 4 * np.pi * np.exp(-G2[1:]/4/w**2)/G2[1:]
+    erfG[0] = 0.
+    B = cell.reciprocal_vectors()
+
+    basex, basey, basez = cell.get_Gv_weights(nmesh)[1]
+    nucPos = np.asarray([cell._env[cell._atm[i,1]:cell._atm[i,1]+3] for i in range(cell._atm.shape[0])])
+    rb = np.dot(nucPos, B.T)
+    SIx = np.exp(1j*np.einsum('z,g->zg', rb[:,0], basex))
+    SIy = np.exp(1j*np.einsum('z,g->zg', rb[:,1], basey))
+    SIz = np.exp(1j*np.einsum('z,g->zg', rb[:,2], basez))
+    SI = SIx[:,:,None,None] * SIy[:,None,:,None] * SIz[:,None,None,:]
+    natm = nucPos.shape[0]
+    SI = SI.reshape(natm, -1)
+    density =  -np.einsum('z,zr->r', cell.atom_charges(), SI)
+    potG = density * erfG / cell.vol  #potential in fourier space
+    potG = potG.reshape(nmesh)
+        
+    #now evaluate it in the real space
+    gx = np.repeat( (basex*2*np.pi/b1).reshape(-1,1), distortedGrid.shape[0], axis=1)
+    gy = np.repeat( (basey*2*np.pi/b2).reshape(-1,1), distortedGrid.shape[0], axis=1)
+    gz = np.repeat( (basez*2*np.pi/b3).reshape(-1,1), distortedGrid.shape[0], axis=1)
+    g1 = np.exp(-1j * gx * distortedGrid[:,0])
+    g2 = np.exp(-1j * gy * distortedGrid[:,1])
+    g3 = np.exp(-1j * gz * distortedGrid[:,2])
+
+    potR = jnp.einsum('ijk,ia,ja,ka->a', potG, g1, g2, g3).real 
+    const = -4*np.pi*ConstantTermPP(a, b, w, cell.atom_charges(), R)/cell.vol
+
+    potR = potR + const.sum()
+    #'''
+    for ni in range(-nR[0],nR[0]+1):
+        for nj in range(-nR[1],nR[1]+1):
+            for nk in range(-nR[2],nR[2]+1):
+                for i in range(nucPos.shape[0]):
+                    x = (distortedGrid-nucPos[i] + np.asarray([ni*b1, nj*b2, nk*b3]) ) 
+                    R = np.einsum('gi,gi->g', x, x)**0.5 + 1.e-8
+                    Z = cell.atom_charges()[i]
+                    potR +=  Z * sp.special.erf(w*R)/R + getAllElectronPPVal(R, a, b, Z)
+                #'''
+
+    return potR
+    
+def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6, allElectronPS = 4):
+    A = cell.lattice_vectors()
+    a1,b1,a2,b2,a3,b3 = 0.,A[0,0],0.,A[1,1],0.,A[2,2]
+
+    #basex, basey, basez = np.arange(nmesh[0])*b1/nmesh[0], np.arange(nmesh[1])*b2/nmesh[1], np.arange(nmesh[2])*b3/nmesh[2]
+    #grid = pyscf.lib.cartesian_prod((basex, basey, basez))
     grid = cell.get_uniform_grids(nmesh)
     basgrid = cell.get_uniform_grids(basMesh)
     
@@ -676,7 +791,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
 
     v0 = 1./JacDet**0.5
     v0 = v0/np.linalg.norm(v0)
-    def V2e(vec, guess, tol=1.e-12):
+    def V2e(vec, guess, tol=1.e-10):
         vec2 = vec*JacDet**0.5
         
         vec2 = vec2 - vec2.dot(v0) * v0
@@ -699,7 +814,11 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     #nucPot = getNuclearPotDenseGrid(denseMesh, nbas, nucPos, cell._atm[:,0], \
     #    invFlow, vmap(Tdel, in_axes=(0)), cell, distortedGrid, JacAll) * JacDet**0.5
 
-    if cell.pseudo:
+    if allElectronPS != 0:
+        a, b = AllElectronPS(allElectronPS)
+        nucPot = getPPVal(distortedGrid, cell, a, b)
+        
+    elif cell.pseudo:
         nGnuc = 60
         denseMesh = [max(nGnuc,nmesh[0]),max(nGnuc,nmesh[0]),max(nGnuc,nmesh[0])]#[12,12,12]
         nucPot = getNuclearPotDenseGrid(denseMesh, nbas, nucPos, cell._atm[:,0], \
@@ -707,8 +826,6 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     else:
         nucDensity = getStructureFactor(nbas, flow, Jacfun, invFlow, cell).real
         nucPot = V2e(nucDensity, 0.*nucDensity).real #* nbas/cell.vol
-    #nucPot = getNuclearPotDenseGridNoDiagonal(denseMesh, nbas, nucPos, cell._atm[:,0], \
-    #    invFlow, JacAllFun, cell, productGrid) 
         
 
     #'''
@@ -725,9 +842,10 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
         kao = Hv2(ao[:,i]/JacDet**0.5, JacDet, Jac, basMesh, G).real/2.
         K[i] = jnp.einsum('g,gi->i', kao/JacDet**0.5, ao) * cell.vol/nbas 
          
-    print(" nuc  ", (N-N1).max())  
-    print(" kin  ", (K-K1).max(), np.unravel_index(abs(K-K1).argmax(), K.shape))  
-    print(" ovlp ", (S-S1).max())  
+
+    print(" nuc  ", abs(N-N1).max(), np.unravel_index(abs(N-N1).argmax(), N.shape), flush=True)  
+    print(" kin  ", abs(K-K1).max(), np.unravel_index(abs(K-K1).argmax(), K.shape), flush=True)  
+    print(" ovlp ", abs(S-S1).max(), flush=True)  
 
     nocc = cell.nelectron//2
     mocoeff = mf.mo_coeff
@@ -805,19 +923,19 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
         Hj[i] = J*orbs[i]
         Hk[i] = ExACE(orbs[i], aceOrbs)
         t, n, j, k = orbs[i].dot(Ht[i].T), orbs[i].dot(Hn[i].T), orbs[i].dot(Hj[i].T), orbs[i].dot(Hk[i].T)
-        print("{0:3d}  {1:14.5f}  {2:14.5f}  {3:14.5f}  {4:14.5f} -> {5:14.5f}".format(i, t, n, j, k, t+n+j-k))
-        print("{0:3d}  {1:14.5f}  {2:14.5f}  {3:14.5f}  {4:14.5f} -> {5:14.5f}".format(i, kin[i,i], nuc[i,i], jmo[i,i], kmo[i,i]/2., kin[i,i]+nuc[i,i]+jmo[i,i]-kmo[i,i]/2))
-        print("{0:3d}  {1:14.5f}  {2:14.5f}  {3:14.5f}  {4:14.5f} (ovlp) -> {5:14.5f}".format(i, kin[i,i]-t, nuc[i,i]-n, jmo[i,i]-j, kmo[i,i]/2.-k, orbs[i].dot(orbs[i])-1.))
+        print("{0:3d}  {1:14.5f}  {2:14.5f}  {3:14.5f}  {4:14.5f} -> {5:14.5f}".format(i, t, n, j, k, t+n+j-k), flush=True)
+        print("{0:3d}  {1:14.5f}  {2:14.5f}  {3:14.5f}  {4:14.5f} -> {5:14.5f}".format(i, kin[i,i], nuc[i,i], jmo[i,i], kmo[i,i]/2., kin[i,i]+nuc[i,i]+jmo[i,i]-kmo[i,i]/2), flush=True)
+        print("{0:3d}  {1:14.5f}  {2:14.5f}  {3:14.5f}  {4:14.5f} (ovlp) -> {5:14.5f}".format(i, kin[i,i]-t, nuc[i,i]-n, jmo[i,i]-j, kmo[i,i]/2.-k, orbs[i].dot(orbs[i])-1.), flush=True)
         print()
 
-    print("Kin  Error {0:14.8f}".format(2*np.einsum('ig,ig', orbs, Ht) - 2*kin.diagonal().sum()))
-    print("Nuc  Error {0:14.8f}".format(2*np.einsum('ig,ig', orbs, Hn) - 2*nuc.diagonal().sum()))
-    print("Coul Error {0:14.8f}".format( np.einsum('ig,ig', orbs, Hj) - jmo.diagonal().sum()))
-    print("Exc  Error {0:14.8f}".format( np.einsum('ig,ig', orbs, Hk) - kmo.diagonal().sum()/2.))
+    print("Kin  Error {0:14.8f}".format(2*np.einsum('ig,ig', orbs, Ht) - 2*kin.diagonal().sum()), flush=True)
+    print("Nuc  Error {0:14.8f}".format(2*np.einsum('ig,ig', orbs, Hn) - 2*nuc.diagonal().sum()), flush=True)
+    print("Coul Error {0:14.8f}".format( np.einsum('ig,ig', orbs, Hj) - jmo.diagonal().sum()), flush=True)
+    print("Exc  Error {0:14.8f}".format( np.einsum('ig,ig', orbs, Hk) - kmo.diagonal().sum()/2.), flush=True)
     Energy = 2*np.einsum('ig,ig', orbs, Ht) + 2*np.einsum('ig,ig', orbs, Hn) + np.einsum('ig,ig', orbs, Hj) - np.einsum('ig,ig', orbs, Hk) + nuclearPotential    
     print("{0:14.8f}  {1:14.8f} {2:14.8f}".format(Energy, mf.e_tot, Energy-mf.e_tot))
     BetterEnergy = 2*np.einsum('ag,ab,bg', mocoeff[:,:nocc], K1, mocoeff[:,:nocc]) + 2*np.einsum('ag,ab,bg', mocoeff[:,:nocc], N1, mocoeff[:,:nocc])  + np.einsum('ig,ig', orbs, Hj) - np.einsum('ig,ig', orbs, Hk) + nuclearPotential 
-    print("BestGuess (distroted Sinc DF) {0:14.8f}".format(BetterEnergy))
+    print("BestGuess (distroted Sinc DF) {0:14.8f}".format(BetterEnergy), flush=True)
 
     #orbs = moVal*(cell.vol/nbas)**0.5
     #orbs = np.einsum('gi,ij,g->jg', ao, mocoeff[:,:1], 1./JacDet**0.5) * (cell.vol/nbas)**0.5 #(ao.dot(mocoeff[:,:1])/JacDet**0.5).T
@@ -828,7 +946,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     Energy = 0.
     de = 1.e-6
     t0 = time.time()
-    charge_convtol, convtol, de = 0.1, 1.e-6, 1.
+    charge_convtol, convtol, de = 1.e-6, 1.e-6, 1.
 
     for outer in range(20):
         #dc = FDiisContext(10)
@@ -879,7 +997,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
             j = dc.update(j, error)
         #'''
         
-        print("{0:3d}   {1:15.8f}  {2:15.8f}  {3:15.8f}  {4:15.2f}".format(outer, Energy.real, errorNorm, (Energy - outerEold), dt) )
+        print("{0:3d}   {1:15.8f}  {2:15.8f}  {3:15.8f}  {4:15.2f}".format(outer, Energy.real, errorNorm, (Energy - outerEold), dt), flush=True )
         #print()
         if (abs(Energy - outerEold) < charge_convtol):
             break
@@ -931,7 +1049,9 @@ def HF_ISDF_DistrotedGrid(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE =
     A = cell.lattice_vectors()
     a1,b1,a2,b2,a3,b3 = 0.,A[0,0],0.,A[1,1],0.,A[2,2]
 
-    grid = cell.get_uniform_grids(nmesh)
+    basex, basey, basez = np.arange(nmesh[0])*b1/nmesh[0], np.arange(nmesh[1])*b2/nmesh[1], np.arange(nmesh[2])*b3/nmesh[2]
+    grid = pyscf.lib.cartesian_prod((basex, basey, basez))
+    #grid = cell.get_uniform_grids(nmesh)
     basgrid = cell.get_uniform_grids(basMesh)
     
     dx, dy, dz, _ = invFlow(grid[:,0], grid[:,1], grid[:,2])
@@ -988,6 +1108,17 @@ def HF_ISDF_DistrotedGrid(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE =
     ao = np.einsum('gi,g->ig', ao, 1/JacDet**0.5) * (cell.vol/nbas)**0.5
     X = get_transformation_matrix(S1, 1.e-12)
 
+
+    #nucDensity = getStructureFactor(nbas, flow, Jacfun, invFlow, cell).real
+    #nucPot = V2e(nucDensity, 0.*nucDensity).real #* nbas/cell.vol
+    #N1 = jnp.einsum('ia,a,ja->ij', ao, nucPot, ao) 
+    '''
+    K = 0.*K1
+    for i in range(ao.shape[0]):
+        kao = Hv2(ao[i,:], JacDet, Jac, basMesh, G).real/2.
+        K[i] = jnp.einsum('g,ig->i', kao, ao)
+    K1 = K
+    '''
     nocc = cell.nelectron//2
 
     nelec, nuclearPotential, nao = cell.nelectron, cell.energy_nuc(), N1.shape[0]

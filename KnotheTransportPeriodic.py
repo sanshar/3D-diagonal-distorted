@@ -170,6 +170,7 @@ def gfun(x,a,b,nb):
 '''
 '''
 
+@jit
 def getJac(Xp1, Xp2, Xp3, C,a1,b1,a2,b2,a3,b3,N):
   def fun(X):
     T1, T2, T3, _ = flowJittable(X[:1], X[1:2], X[2:], C,a1,b1,a2,b2,a3,b3,N)
@@ -509,7 +510,7 @@ def LearnTransport(nb1, nb2, nb3, mf, N, shift):
         Ffit = jnp.reshape(ffit,(ng1,ng2,ng3))
         Fhat = F/jnp.sum(F)
         Ffithat = Ffit/jnp.sum(Ffit)
-        print(jnp.max(jnp.abs(Ffithat-Fhat))/jnp.max(Fhat), jnp.max(jnp.abs(Ffithat-Fhat)))
+        print(jnp.max(jnp.abs(Ffithat-Fhat))/jnp.max(Fhat), jnp.max(jnp.abs(Ffithat-Fhat)), flush=True)
 
         c = c/jnp.linalg.norm(c)
         C = C.at[:,:,:,n].set(c)
