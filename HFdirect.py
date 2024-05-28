@@ -463,12 +463,13 @@ def Hv(v, JacDet, orbDerivValCardinal):
     
     return Hv
 
-def Ex(orb, mo, V2e, dw):
+def Ex(orb, mo, V2e, dw, guess):
     nmo = mo.shape[0]  
     orbOut = 0.*orb
     for i in range(nmo):
         den = mo[i]*orb
-        Ji = V2e(den, 0.*den) * dw
+        Ji = V2e(den, guess[i]) * dw
+        guess[i][:] = Ji / dw
         orbOut += mo[i]*Ji
     return orbOut
 
@@ -479,13 +480,13 @@ def ExACE(orb, ACEmo):
     w = ACEmo.dot(orb) #np.einsum('ig,g->i', mo, orb)
     return ACEmo.T.dot(w)
 
-def makeACE(mo, V2e, dw):
+def makeACE(mo, V2e, dw, guess):
     nmo = mo.shape[0]
     M = np.zeros((nmo, nmo))
     W = 0.*mo
 
     for i in range(nmo):
-        W[i] = Ex(mo[i], mo, V2e, dw)
+        W[i] = Ex(mo[i], mo, V2e, dw, guess[i])
 
     M = mo.dot(W.T)
     Minv = np.linalg.inv(M)
@@ -910,7 +911,8 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     #conv, e, x0 = Davidson.davidson1(lambda C : FC(C, 0.*G2), Ck, precond, nroots=nelec//2, verbose=0)
     #print(basMesh, conv, e)
 
-    aceOrbs = makeACE(orbs, V2e, nbas/cell.vol)    
+    ACEguess = [[0.*orbs[0] for i in range(nocc)] for j in range(nocc)]
+    aceOrbs = makeACE(orbs, V2e, nbas/cell.vol, ACEguess)   
     density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
     j = V2e(density.real, 0.*G2) * nbas/cell.vol
     #Ho = FC(orbs, j, aceOrbs, True)
@@ -946,16 +948,19 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     Energy = 0.
     de = 1.e-6
     t0 = time.time()
-    charge_convtol, convtol, de = 1.e-6, 1.e-6, 1.
+    charge_convtol, convtol, de = 1.e-6, 1.e-6, 1.e-6
+    density, j = np.zeros((ao.shape[1],)), np.zeros((ao.shape[1],))
 
     for outer in range(20):
         #dc = FDiisContext(10)
 
         if (ACE):
-            aceOrbs = makeACE(orbs, V2e, nbas/cell.vol)
-            
+            for i in range(nocc):
+                for j in range(nocc):
+                    ACEguess[i][j] = ACEguess[i][j]/JacDet**0.5
+            aceOrbs = makeACE(orbs, V2e, nbas/cell.vol, ACEguess)
         density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
-        j = V2e(density.real, 0.*G2) * nbas/cell.vol
+        j = V2e(density.real, j/(nbas/cell.vol)/4./np.pi/JacDet**0.5) * nbas/cell.vol
         
         outerEold = Energy
         from pyscf.lib.diis import DIIS    
@@ -975,7 +980,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
             
             density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
             oldj = 1.*j
-            j = V2e(density, j/(nbas/cell.vol)/4./np.pi) * nbas/cell.vol
+            j = V2e(density, j/(nbas/cell.vol)/4./np.pi/JacDet**0.5) * nbas/cell.vol
             
             error = j - oldj
             
@@ -1001,9 +1006,6 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
         #print()
         if (abs(Energy - outerEold) < charge_convtol):
             break
-               
-        if (ACE):
-            aceOrbs = makeACE(orbs, V2e, nbas/cell.vol)
 
         
 
