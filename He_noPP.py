@@ -10,21 +10,21 @@ from pyscf.pbc.dft import multigrid
 ng0 = 10
 for nG in range(ng0,200,4):
     cell = pgto.M(
-        a = 8*numpy.eye(3),
+        a = 10*numpy.eye(3),
         #atom = '''Li 5.0 6.0 6.0
                 #H  8.0 6.0 6.0''',
                 #H    4.6 4.6 4.6''',#+gh,
-        #atom = '''He 4. 4. 4.''',
-        #atom = '''He 1.666 1.666 1.666,
-        #          He 4.333 4.333 4.333''',
-        atom = '''He 1.666 1.666 4.0,
-                  He 4.333 4.333 4.0''',
+        atom = '''Be 5. 5. 5.''',
+        #atom = '''He 1.666 1.666 4.0,
+        #          He 4.333 4.333 4.0''',
+        #atom = '''Be 3.666 3.666 3.666,
+        #          Be 6.333 6.333 6.333''',
         #He 3. 0. 0.''',
         #basis = "gth-qzv3p",
         #basis = "anorcc",
-        basis = "cc-pvtz",
+        basis = "cc-pvqz",
         #pseudo = "gth-pade",
-        verbose = 3,
+        verbose = 4,
         mesh = [nG, nG, nG],
         spin=0,
         charge=0,
@@ -49,7 +49,7 @@ for nG in range(ng0,200,4):
         #mf = multigrid.multigrid(mf)
         #mf.kernel()
 
-        mf = pyscf.pbc.scf.RHF(cell, exxdiv=None).rs_density_fit(auxbasis='weigend')
+        mf = pyscf.pbc.scf.RHF(cell, exxdiv=None).mix_density_fit()#auxbasis='weigend')
         mf.kernel()
         #exit(0)
         #exit(0)
@@ -60,11 +60,11 @@ for nG in range(ng0,200,4):
         #C = KnotheTransportPeriodic.LearnTransport(16, 16, 16, mf, 15, 0.0)
         #KnotheTransportPeriodic.Plot2DTransport(C, 25, 25, 5., mf)
 
-        #C = KnotheTransportPeriodic.LearnTransportInverse(20, 20, 20, mf, 15, 0.0)
-        #np.save("fullC", C)
-        C = np.load("fullC.npy").reshape(20,20,20,-1)
+        C = KnotheTransportPeriodic.LearnTransportInverse(20, 20, 20, mf, 15, 0.0)
+        np.save("fullC", C)
+        #C = np.load("fullC.npy").reshape(20,20,20,-1)
         #print("Solving done")
-        #KnotheTransportPeriodic.Plot2DTransportInverseFit(C, 25, 25, 4., mf)
+        #KnotheTransportPeriodic.Plot2DTransportInverseFit(C, 25, 25, 5., mf)
         
         '''
         a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]
@@ -124,7 +124,7 @@ for nG in range(ng0,200,4):
 
     a1,b1,a2,b2,a3,b3 = 0.,mf.cell.a[0,0],0.,mf.cell.a[1,1],0.,mf.cell.a[2,2]
     flow = lambda x, y, z : KnotheTransportPeriodic.inv_flow(x, y, z, C, a1, b1, a2, b2, a3, b3, C.shape[-1])
-    invFlow = lambda x, y, z : KnotheTransportPeriodic.flow(x, y, z, C, a1, b1, a2, b2, a3, b3, C.shape[-1])
+    invFlow = lambda x, y, z : KnotheTransportPeriodic.flowWithJac(x, y, z, C, a1, b1, a2, b2, a3, b3, C.shape[-1])
     Jac = lambda x, y, z, : KnotheTransportPeriodic.getJac(x, y, z, C, a1, b1, a2, b2, a3, b3, C.shape[-1])
     
     #invFlow, JacAllFun = Distort3.returnFunc(cell)
@@ -133,7 +133,9 @@ for nG in range(ng0,200,4):
     #invFlow, JacAllFun, invFlowSinglePoint, JacAllSinglePoint = Distort3.returnFuncFourier(cell, Fx, Fy, Fz)
     #print("FOURIER")
     #HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, JacAllFun, productGrid=True)
-    HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, flow, Jac)
+    HFdirect.HF(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, flow, Jac, allElectronPS = 4)
+    print(cell.basis)
+    #HFdirect.HF_ISDF_DistrotedGrid(cell, [nG,nG,nG], [nG, nG, nG], mf, invFlow, flow, Jac)
     #continue
     #exit(0)
     '''

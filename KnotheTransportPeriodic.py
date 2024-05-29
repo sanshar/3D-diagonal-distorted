@@ -165,7 +165,8 @@ def gfun(x,a,b,nb):
   u = jnp.reshape( (x-a)/(b-a), (nx,1) )
   n = jnp.reshape( jnp.arange(nb), (1,nb) ) - nb//2
   g = jnp.exp(-2*jnp.pi*1j*n*u)
-  return g
+  dg = -2*jnp.pi*1j*n/(b-a) * g
+  return g, dg
 
 '''
 '''
@@ -204,6 +205,77 @@ def chebfit(F,g1,g2,g3,S):
 
 # define Knothe transport function
 @jit
+def knothe3dchebWithJac(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
+
+  L1 = b1-a1
+  L2 = b2-a2
+  L3 = b3-a3
+  nb1 = c.shape[0]
+  nb2 = c.shape[1]
+  nb3 = c.shape[2]
+  m1 = jnp.ravel( Gfun(b1*jnp.ones(1),a1,b1,nb1) )
+  m2 = jnp.ravel( Gfun(b2*jnp.ones(1),a2,b2,nb2) )
+  m3 = jnp.ravel( Gfun(b3*jnp.ones(1),a3,b3,nb3) )
+
+  M = jnp.einsum('abc,a,b,c',c,m1,m2,m3)
+  cc = c/M
+
+  g1, dg1 = gfun(x1,a1,b1,nb1)
+  g2, dg2 = gfun(x2,a2,b2,nb2)
+  g3, dg3 = gfun(x3,a3,b3,nb3)
+  G1 = Gfun(x1,a1,b1,nb1)
+  G2 = Gfun(x2,a2,b2,nb2)
+  G3 = Gfun(x3,a3,b3,nb3)
+
+  rho1 = jnp.einsum('abc,ia,b,c->i',cc,g1,m2,m3)
+  rho2 = jnp.einsum('abc,ia,ib,c->i',cc,g1,g2,m3)
+  rho = jnp.einsum('abc,ia,ib,ic->i',cc,g1,g2,g3)
+
+  normT1 = jnp.einsum('abc,ia,b,c->i',cc,G1,m2,m3)
+  normT2 = jnp.einsum('abc,ia,ib,c->i',cc,g1,G2,m3)
+  normT3 = jnp.einsum('abc,ia,ib,ic->i',cc,g1,g2,G3)
+  
+  T1 = a1 + L1*normT1
+  T2 = a2 + L2*normT2/rho1
+  T3 = a3 + L3*normT3/rho2
+
+
+  drho1_1 = jnp.einsum('abc,ia,b,c->i',cc,dg1,m2,m3)
+
+  drho2_1 = jnp.einsum('abc,ia,ib,c->i',cc,dg1,g2,m3)
+  drho2_2 = jnp.einsum('abc,ia,ib,c->i',cc,g1,dg2,m3)
+
+  Jac = jnp.zeros((x1.shape[0], 3,3))
+  J11 = (L1 * rho1).reshape(-1,1).real
+  #Jac = Jac.at[:,0,0].set(J11.real)
+
+  J22 = (L2 * rho2 / rho1).reshape(-1,1).real
+  J21 = (L2 * (jnp.einsum('abc,ia,ib,c->i',cc,dg1,G2,m3) / rho1 - normT2 * drho1_1 / rho1**2)).reshape(-1,1).real
+  #Jac = Jac.at[2,2].set(J22.real)
+  #Jac.at[2,1].set(J21.real)
+
+
+  J33 = (L3 * rho / rho2).reshape(-1,1).real
+  J31 = (L3 * ( jnp.einsum('abc,ia,ib,ic->i',cc,dg1,g2,G3)/rho2 - normT3 * drho2_1 / rho2**2)).reshape(-1,1).real
+  J32 = (L3 * ( jnp.einsum('abc,ia,ib,ic->i',cc,g1,dg2,G3)/rho2 - normT3 * drho2_2 / rho2**2)).reshape(-1,1).real
+  #Jac = Jac.at[3,3].set(J33.real)
+  #Jac = Jac.at[3,1].set(J31.real)
+  #Jac = Jac.at[3,2].set(J32.real)
+              
+
+  zeros = 0.*J11
+  Jac = jnp.hstack((J11, zeros, zeros, J21, J22, zeros, J31, J32, J33)).reshape(-1,3,3)
+
+  T1 = jnp.real(T1)
+  T2 = jnp.real(T2)
+  T3 = jnp.real(T3)
+  rho = jnp.real(rho)
+  
+  return T1,T2,T3,Jac
+
+
+# define Knothe transport function
+@jit
 def knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
 
   L1 = b1-a1
@@ -219,9 +291,9 @@ def knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
   M = jnp.einsum('abc,a,b,c',c,m1,m2,m3)
   cc = c/M
 
-  g1 = gfun(x1,a1,b1,nb1)
-  g2 = gfun(x2,a2,b2,nb2)
-  g3 = gfun(x3,a3,b3,nb3)
+  g1, dg1 = gfun(x1,a1,b1,nb1)
+  g2, dg2 = gfun(x2,a2,b2,nb2)
+  g3, dg3 = gfun(x3,a3,b3,nb3)
   G1 = Gfun(x1,a1,b1,nb1)
   G2 = Gfun(x2,a2,b2,nb2)
   G3 = Gfun(x3,a3,b3,nb3)
@@ -353,6 +425,38 @@ def flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,N):
 
 # Define function that evaluates flow map and Jacobian of input
 #@jit
+def flowWithJac(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,N):
+  T1 = x1
+  T2 = x2
+  T3 = x3
+  p = x1.shape[0]
+  Jac =  jnp.repeat(jnp.eye(3).reshape(1,3,3), p, axis=0)
+  #jnp.ones((x1.shape[0], 3,3))
+  
+  for n in range(N):
+    c = C[:,:,:,n]
+    if jnp.mod(n,3)==0:
+      T1,T2,T3,J = knothe3dchebWithJac(T1,T2,T3,a1,b1,a2,b2,a3,b3,c)
+      Jac = jnp.einsum('ijk,ikl->ijl', J, Jac)
+
+    elif jnp.mod(n,3)==1:
+      T3,T1,T2,J = knothe3dchebWithJac(T3,T1,T2,a3,b3,a1,b1,a2,b2,jnp.transpose(c,(2,0,1)))
+      J = J[:,jnp.array([1,2,0]),:]
+      J = J [:,:,jnp.array([1,2,0])]
+      Jac = jnp.einsum('ijk,ikl->ijl', J, Jac)
+      #Jac = J.dot(Jac)
+
+    else:
+      T2,T3,T1,J = knothe3dchebWithJac(T2,T3,T1,a2,b2,a3,b3,a1,b1,jnp.transpose(c,(1,2,0)))
+      J = J[:,jnp.array([2,0,1]),:]
+      J = J [:,:,jnp.array([2,0,1])]
+      Jac = jnp.einsum('ijk,ikl->ijl', J, Jac)
+      #Jac = J.dot(Jac)
+
+  return T1,T2,T3,Jac
+
+# Define function that evaluates flow map and Jacobian of input
+#@jit
 def inv_flow(x1,x2,x3,C,a1,b1,a2,b2,a3,b3,N, maxIter=maxIter,alpha=alpha,tol=tol):
   T1 = x1
   T2 = x2
@@ -397,17 +501,17 @@ def LearnTransportInverse(nb1, nb2, nb3, mf, N, shift):
     Xg2 = jnp.reshape(X2,ng1*ng2*ng3)
     Xg3 = jnp.reshape(X3,ng1*ng2*ng3)
 
-    gX1 = gfun(Xg1,a1,b1,nb1)
-    gX2 = gfun(Xg2,a2,b2,nb2)
-    gX3 = gfun(Xg3,a3,b3,nb3)
+    gX1, _ = gfun(Xg1,a1,b1,nb1)
+    gX2, _ = gfun(Xg2,a2,b2,nb2)
+    gX3, _ = gfun(Xg3,a3,b3,nb3)
 
 
     Tg1, Tg2, Tg3 = Xg1, Xg2, Xg3
 
   # evaluate Chebyshev polynomials on quadrature grid
-    g1 = gfun(xg1,a1,b1,nb1)
-    g2 = gfun(xg2,a2,b2,nb2)
-    g3 = gfun(xg3,a3,b3,nb3)
+    g1, _ = gfun(xg1,a1,b1,nb1)
+    g2, _ = gfun(xg2,a2,b2,nb2)
+    g3, _ = gfun(xg3,a3,b3,nb3)
 
     S = 1
 
@@ -440,9 +544,9 @@ def LearnTransportInverse(nb1, nb2, nb3, mf, N, shift):
           else:
             Z2,Z3,Z1,_,iter = inv_knothe3dcheb(Xg2,Xg3,Xg1,a2,b2,a3,b3,a1,b1,jnp.transpose(c,(1,2,0)),maxIter,alpha,tol)
           itervec = itervec.at[n].set(iter)
-          gZ1 = gfun(Z1,a1,b1,nb1)
-          gZ2 = gfun(Z2,a2,b2,nb2)
-          gZ3 = gfun(Z3,a3,b3,nb3)
+          gZ1, _ = gfun(Z1,a1,b1,nb1)
+          gZ2, _ = gfun(Z2,a2,b2,nb2)
+          gZ3, _ = gfun(Z3,a3,b3,nb3)
           f = jnp.einsum('abc,ia,ib,ic->i',c,gZ1,gZ2,gZ3)
           F = jnp.reshape(f,(ng1,ng2,ng3))
 
@@ -487,9 +591,9 @@ def LearnTransport(nb1, nb2, nb3, mf, N, shift):
     Xg3 = jnp.reshape(X3,ng1*ng2*ng3)
 
   # evaluate Chebyshev polynomials on quadrature grid
-    g1 = gfun(xg1,a1,b1,nb1)
-    g2 = gfun(xg2,a2,b2,nb2)
-    g3 = gfun(xg3,a3,b3,nb3)
+    g1, _ = gfun(xg1,a1,b1,nb1)
+    g2, _ = gfun(xg2,a2,b2,nb2)
+    g3, _ = gfun(xg3,a3,b3,nb3)
 
     S = 1
 
@@ -499,9 +603,9 @@ def LearnTransport(nb1, nb2, nb3, mf, N, shift):
     itervec = jnp.zeros(N-1)
     f = rhorootfun(Xg1,Xg2,Xg3,mf,N, shift)
     F = jnp.reshape(f,(ng1,ng2,ng3))
-    gX1 = gfun(Xg1,a1,b1,nb1)
-    gX2 = gfun(Xg2,a2,b2,nb2)
-    gX3 = gfun(Xg3,a3,b3,nb3)
+    gX1, _ = gfun(Xg1,a1,b1,nb1)
+    gX2, _ = gfun(Xg2,a2,b2,nb2)
+    gX3, _ = gfun(Xg3,a3,b3,nb3)
 
     print("Maximum relative and absolute fitting error per flow step:")
     for n in range(N):
@@ -524,9 +628,9 @@ def LearnTransport(nb1, nb2, nb3, mf, N, shift):
                 Z2,Z3,Z1,_,iter = inv_knothe3dcheb(Xg2,Xg3,Xg1,a2,b2,a3,b3,a1,b1,jnp.transpose(c,(1,2,0)),maxIter,alpha,tol)
 
             itervec = itervec.at[n].set(iter)
-            gZ1 = gfun(Z1,a1,b1,nb1)
-            gZ2 = gfun(Z2,a2,b2,nb2)
-            gZ3 = gfun(Z3,a3,b3,nb3)
+            gZ1, _ = gfun(Z1,a1,b1,nb1)
+            gZ2, _ = gfun(Z2,a2,b2,nb2)
+            gZ3, _ = gfun(Z3,a3,b3,nb3)
             f = jnp.einsum('abc,ia,ib,ic->i',c,gZ1,gZ2,gZ3)
             F = jnp.reshape(f,(ng1,ng2,ng3))
     return C

@@ -762,8 +762,8 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
     '''
 
-    dx, dy, dz, _ = invFlow(grid[:,0], grid[:,1], grid[:,2])
-    Jac = Jacfun(grid[:,0], grid[:,1], grid[:,2])
+    dx, dy, dz, Jac = invFlow(grid[:,0], grid[:,1], grid[:,2])
+    #Jac = Jacfun(grid[:,0], grid[:,1], grid[:,2])
     Jac = np.asarray([np.linalg.inv(Ji) for Ji in Jac])
     JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
     distortedGrid = jnp.hstack((dx.reshape(-1,1), dy.reshape(-1,1), dz.reshape(-1,1)))
@@ -951,7 +951,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     charge_convtol, convtol, de = 1.e-6, 1.e-6, 1.e-6
     density, j = np.zeros((ao.shape[1],)), np.zeros((ao.shape[1],))
 
-    for outer in range(20):
+    for outer in range(5):
         #dc = FDiisContext(10)
 
         if (ACE):
@@ -1056,8 +1056,8 @@ def HF_ISDF_DistrotedGrid(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE =
     #grid = cell.get_uniform_grids(nmesh)
     basgrid = cell.get_uniform_grids(basMesh)
     
-    dx, dy, dz, _ = invFlow(grid[:,0], grid[:,1], grid[:,2])
-    Jac = Jacfun(grid[:,0], grid[:,1], grid[:,2])
+    dx, dy, dz, Jac = invFlow(grid[:,0], grid[:,1], grid[:,2])
+    #Jac = Jacfun(grid[:,0], grid[:,1], grid[:,2])
     Jac = np.asarray([np.linalg.inv(Ji) for Ji in Jac])
     JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
     distortedGrid = jnp.hstack((dx.reshape(-1,1), dy.reshape(-1,1), dz.reshape(-1,1)))
