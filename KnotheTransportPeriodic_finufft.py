@@ -355,12 +355,14 @@ def knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
 
   cc2int = jnp.einsum('ij, j->ij', cc2, (-b2/(2*np.pi*1.j)) / (jnp.arange(nb2) - nb2//2 ) )
   cc2int = cc2int.at[:, nb2//2].set(0)
-  normT2 = nufft.nufft2(cc2int, x1*2*np.pi/b1, x2*2*np.pi/b2) + jnp.sum(cc2[:, nb2//2]) * x2
+  #normT2 = nufft.nufft2(cc2int, x1*2*np.pi/b1, x2*2*np.pi/b2) + jnp.einsum('a,ia->i',cc2[:, nb2//2], g1) * x2
+  normT2 = nufft.nufft2(cc2int, x1*2*np.pi/b1, x2*2*np.pi/b2) + nufft.nufft2(cc2[:,nb1//2], x1*2*np.pi/b1) * x2
 
 
   cc3int = jnp.einsum('ijk, k->ijk', cc, (-b3/(2*np.pi*1.j)) / (jnp.arange(nb3) - nb3//2 ) )
   cc3int = cc3int.at[:, :, nb3//2].set(0)
-  normT3 = nufft.nufft2(cc3int, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3) + jnp.sum(cc[:, :, nb3//2]) * x3
+  #normT3 = nufft.nufft2(cc3int, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3) + jnp.einsum('ab,ia,ib->i', cc[:, :, nb3//2], g1, g2) * x3
+  normT3 = nufft.nufft2(cc3int, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3) + nufft.nufft2(cc[:,:,nb3//2], x1*2*np.pi/b1, x2*2*np.pi/b2) * x3
 
   T1 = a1 + L1*normT1
   T2 = a2 + L2*normT2/rho1
@@ -619,6 +621,8 @@ def LearnTransportInverse(nb1, nb2, nb3, mf, N, shift):
 
           F = jnp.reshape(f,(ng1,ng2,ng3))
 
+      import pdb
+      pdb.set_trace()
       Tg1,Tg2,Tg3,_ = flow(Xg1,Xg2,Xg3,C,a1,b1,a2,b2,a3,b3,N)
 
       print("")
