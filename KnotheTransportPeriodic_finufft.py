@@ -1,7 +1,7 @@
 #@title Import dependencies
 
 import os
-#os.environ['JAX_ENABLE_X64'] = 'True'
+os.environ['JAX_ENABLE_X64'] = 'True'
 os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=1 --xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads=6'
 os.environ['JAX_PLATFORM_NAME'] = 'cpu'
 #os.environ['JAX_DISABLE_JIT'] = 'True'
@@ -145,8 +145,8 @@ def rhofun(x1,x2,x3, mf, shift):
 # hyperparameters for fixed-point iteration computation of inverse flow
 maxIter = 1000 # maximum number of iterations
 alpha = 1. # mixing parameter
-tol = 1e-10 # convergence tolerance
-
+tol = 1e-8 # convergence tolerance
+ffteps = 1.e-10
 
 
 
@@ -221,48 +221,69 @@ def knothe3dchebWithJac(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
   M = jnp.einsum('abc,a,b,c',c,m1,m2,m3)
   cc = c/M
 
-  g1, dg1 = gfun(x1,a1,b1,nb1)
-  g2, dg2 = gfun(x2,a2,b2,nb2)
-  g3, dg3 = gfun(x3,a3,b3,nb3)
-  G1 = Gfun(x1,a1,b1,nb1)
-  G2 = Gfun(x2,a2,b2,nb2)
-  G3 = Gfun(x3,a3,b3,nb3)
 
-  rho1 = jnp.einsum('abc,ia,b,c->i',cc,g1,m2,m3)
-  rho2 = jnp.einsum('abc,ia,ib,c->i',cc,g1,g2,m3)
-  rho = jnp.einsum('abc,ia,ib,ic->i',cc,g1,g2,g3)
+  cc1 = jnp.einsum('abc,b,c->a', cc, m2, m3)
+  cc2 = jnp.einsum('abc,c->ab', cc, m3)
 
-  normT1 = jnp.einsum('abc,ia,b,c->i',cc,G1,m2,m3)
-  normT2 = jnp.einsum('abc,ia,ib,c->i',cc,g1,G2,m3)
-  normT3 = jnp.einsum('abc,ia,ib,ic->i',cc,g1,g2,G3)
-  
+  rho1 = nufft.nufft2(cc1, x1*2*np.pi/b1, eps=ffteps)
+  rho2 = nufft.nufft2(cc2, x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps)
+  rho = nufft.nufft2(cc, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3, eps=ffteps)
+
+  cc1int = cc1 * (-b1/(2*np.pi*1.j)) / (jnp.arange(nb1) - nb1//2)
+  cc1int = cc1int.at[nb1//2].set(0.)
+  normT1 = nufft.nufft2(cc1int, x1*2*np.pi/b1, eps=ffteps) + cc1[nb1//2] * x1 
+
+  cc2int = jnp.einsum('ij, j->ij', cc2, (-b2/(2*np.pi*1.j)) / (jnp.arange(nb2) - nb2//2 ) )
+  cc2int = cc2int.at[:, nb2//2].set(0)
+  normT2 = nufft.nufft2(cc2int, x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps) + nufft.nufft2(cc2[:,nb1//2], x1*2*np.pi/b1, eps=ffteps) * x2
+
+
+  cc3int = jnp.einsum('ijk, k->ijk', cc, (-b3/(2*np.pi*1.j)) / (jnp.arange(nb3) - nb3//2 ) )
+  cc3int = cc3int.at[:, :, nb3//2].set(0)
+  normT3 = nufft.nufft2(cc3int, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3, eps=ffteps) + nufft.nufft2(cc[:,:,nb3//2], x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps) * x3
+
   T1 = a1 + L1*normT1
   T2 = a2 + L2*normT2/rho1
   T3 = a3 + L3*normT3/rho2
 
 
-  drho1_1 = jnp.einsum('abc,ia,b,c->i',cc,dg1,m2,m3)
+  cc1diff   = cc1 * (-2*np.pi*1.j/b1) * (jnp.arange(nb1) - nb1//2)
+  cc2diff_1 = jnp.einsum('ij,i->ij', cc2, (-2*np.pi*1.j/b1) * (jnp.arange(nb1) - nb1//2) )
+  cc2diff_2 = jnp.einsum('ij,j->ij', cc2, (-2*np.pi*1.j/b2) * (jnp.arange(nb2) - nb2//2) )
 
-  drho2_1 = jnp.einsum('abc,ia,ib,c->i',cc,dg1,g2,m3)
-  drho2_2 = jnp.einsum('abc,ia,ib,c->i',cc,g1,dg2,m3)
+  drho1_1 = nufft.nufft2(cc1diff, x1*2*np.pi/b1, eps=ffteps)
+
+  drho2_1 = nufft.nufft2(cc2diff_1, x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps)
+  drho2_2 = nufft.nufft2(cc2diff_2, x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps)
+
 
   Jac = jnp.zeros((x1.shape[0], 3,3))
   J11 = (L1 * rho1).reshape(-1,1).real
-  #Jac = Jac.at[:,0,0].set(J11.real)
+
 
   J22 = (L2 * rho2 / rho1).reshape(-1,1).real
-  J21 = (L2 * (jnp.einsum('abc,ia,ib,c->i',cc,dg1,G2,m3) / rho1 - normT2 * drho1_1 / rho1**2)).reshape(-1,1).real
-  #Jac = Jac.at[2,2].set(J22.real)
-  #Jac.at[2,1].set(J21.real)
+  cc2_dif_int = jnp.einsum('ij,i, j->ij', cc2, (-2*np.pi*1.j/b1) * (jnp.arange(nb1) - nb1//2), (-b2/(2*np.pi*1.j)) / (jnp.arange(nb2) - nb2//2 ) )
+  cc2_dif_int = cc2_dif_int.at[:, nb2//2].set(0)
+  cc2_dif = jnp.einsum('ij,i->ij', cc2, (-2*np.pi*1.j/b1) * (jnp.arange(nb1) - nb1//2) )
+  J21num = nufft.nufft2(cc2_dif_int, x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps) + nufft.nufft2(cc2_dif[:,nb2//2], x1*2*np.pi/b1, eps=ffteps) * x2
+  J21 = (L2 * (J21num / rho1 - normT2 * drho1_1 / rho1**2)).reshape(-1,1).real
 
 
   J33 = (L3 * rho / rho2).reshape(-1,1).real
-  J31 = (L3 * ( jnp.einsum('abc,ia,ib,ic->i',cc,dg1,g2,G3)/rho2 - normT3 * drho2_1 / rho2**2)).reshape(-1,1).real
-  J32 = (L3 * ( jnp.einsum('abc,ia,ib,ic->i',cc,g1,dg2,G3)/rho2 - normT3 * drho2_2 / rho2**2)).reshape(-1,1).real
-  #Jac = Jac.at[3,3].set(J33.real)
-  #Jac = Jac.at[3,1].set(J31.real)
-  #Jac = Jac.at[3,2].set(J32.real)
-              
+
+  cc_dif_int = jnp.einsum('ijk,i, k->ijk', cc, (-2*np.pi*1.j/b1) * (jnp.arange(nb1) - nb1//2), (-b3/(2*np.pi*1.j)) / (jnp.arange(nb3) - nb3//2 ) )
+  cc_dif = jnp.einsum('ijk,i->ijk', cc, (-2*np.pi*1.j/b1) * (jnp.arange(nb1) - nb1//2))
+  cc_dif_int = cc_dif_int.at[:, :, nb3//2].set(0)
+  J31num = nufft.nufft2(cc_dif_int, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3, eps=ffteps) + nufft.nufft2(cc_dif[:,:,nb3//2], x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps) * x3
+  
+  J31 = (L3 * ( J31num/rho2 - normT3 * drho2_1 / rho2**2)).reshape(-1,1).real
+
+  cc_dif_int = jnp.einsum('ijk,j, k->ijk', cc, (-2*np.pi*1.j/b2) * (jnp.arange(nb2) - nb2//2), (-b3/(2*np.pi*1.j)) / (jnp.arange(nb3) - nb3//2 ) )
+  cc_dif = jnp.einsum('ijk,j->ijk', cc, (-2*np.pi*1.j/b2) * (jnp.arange(nb2) - nb2//2))
+  cc_dif_int = cc_dif_int.at[:, :, nb3//2].set(0)
+  J32num = nufft.nufft2(cc_dif_int, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3, eps=ffteps) + nufft.nufft2(cc_dif[:,:,nb3//2], x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps) * x3
+  J32 = (L3 * ( J32num/rho2 - normT3 * drho2_2 / rho2**2)).reshape(-1,1).real
+
 
   zeros = 0.*J11
   Jac = jnp.hstack((J11, zeros, zeros, J21, J22, zeros, J31, J32, J33)).reshape(-1,3,3)
@@ -273,45 +294,6 @@ def knothe3dchebWithJac(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
   rho = jnp.real(rho)
   
   return T1,T2,T3,Jac
-
-
-@jit
-def knothe3dcheb2(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
-
-  L1 = b1-a1
-  L2 = b2-a2
-  L3 = b3-a3
-  nb1 = c.shape[0]
-  nb2 = c.shape[1]
-  nb3 = c.shape[2]
-  m1 = jnp.ravel( Gfun(b1*jnp.ones(1),a1,b1,nb1) )
-  m2 = jnp.ravel( Gfun(b2*jnp.ones(1),a2,b2,nb2) )
-  m3 = jnp.ravel( Gfun(b3*jnp.ones(1),a3,b3,nb3) )
-
-  M = jnp.einsum('abc,a,b,c',c,m1,m2,m3)
-  cc = c/M
-
-  g1, dg1 = gfun(x1,a1,b1,nb1)
-  g2, dg2 = gfun(x2,a2,b2,nb2)
-  g3, dg3 = gfun(x3,a3,b3,nb3)
-  G1 = Gfun(x1,a1,b1,nb1)
-  G2 = Gfun(x2,a2,b2,nb2)
-  G3 = Gfun(x3,a3,b3,nb3)
-
-  rho1 = jnp.einsum('abc,ia,b,c->i',cc,g1,m2,m3)
-  rho2 = jnp.einsum('abc,ia,ib,c->i',cc,g1,g2,m3)
-  rho = jnp.einsum('abc,ia,ib,ic->i',cc,g1,g2,g3)
-
-  T1 = a1 + L1*jnp.einsum('abc,ia,b,c->i',cc,G1,m2,m3)
-  T2 = a2 + L2*jnp.einsum('abc,ia,ib,c->i',cc,g1,G2,m3)/rho1
-  T3 = a3 + L3*jnp.einsum('abc,ia,ib,ic->i',cc,g1,g2,G3)/rho2
-
-  T1 = jnp.real(T1)
-  T2 = jnp.real(T2)
-  T3 = jnp.real(T3)
-  rho = jnp.real(rho)
-  
-  return T1,T2,T3,rho
 
 
 # define Knothe transport function
@@ -345,24 +327,24 @@ def knothe3dcheb(x1,x2,x3,a1,b1,a2,b2,a3,b3,c):
   cc1 = jnp.einsum('abc,b,c->a', cc, m2, m3)
   cc2 = jnp.einsum('abc,c->ab', cc, m3)
 
-  rho1 = nufft.nufft2(cc1, x1*2*np.pi/b1)
-  rho2 = nufft.nufft2(cc2, x1*2*np.pi/b1, x2*2*np.pi/b2)
-  rho = nufft.nufft2(cc, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3)
+  rho1 = nufft.nufft2(cc1, x1*2*np.pi/b1, eps=ffteps)
+  rho2 = nufft.nufft2(cc2, x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps)
+  rho = nufft.nufft2(cc, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3, eps=ffteps)
 
   cc1int = cc1 * (-b1/(2*np.pi*1.j)) / (jnp.arange(nb1) - nb1//2)
   cc1int = cc1int.at[nb1//2].set(0.)
-  normT1 = nufft.nufft2(cc1int, x1*2*np.pi/b1) + cc1[nb1//2] * x1 
+  normT1 = nufft.nufft2(cc1int, x1*2*np.pi/b1, eps=ffteps) + cc1[nb1//2] * x1 
 
   cc2int = jnp.einsum('ij, j->ij', cc2, (-b2/(2*np.pi*1.j)) / (jnp.arange(nb2) - nb2//2 ) )
   cc2int = cc2int.at[:, nb2//2].set(0)
   #normT2 = nufft.nufft2(cc2int, x1*2*np.pi/b1, x2*2*np.pi/b2) + jnp.einsum('a,ia->i',cc2[:, nb2//2], g1) * x2
-  normT2 = nufft.nufft2(cc2int, x1*2*np.pi/b1, x2*2*np.pi/b2) + nufft.nufft2(cc2[:,nb1//2], x1*2*np.pi/b1) * x2
+  normT2 = nufft.nufft2(cc2int, x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps) + nufft.nufft2(cc2[:,nb1//2], x1*2*np.pi/b1, eps=ffteps) * x2
 
 
   cc3int = jnp.einsum('ijk, k->ijk', cc, (-b3/(2*np.pi*1.j)) / (jnp.arange(nb3) - nb3//2 ) )
   cc3int = cc3int.at[:, :, nb3//2].set(0)
   #normT3 = nufft.nufft2(cc3int, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3) + jnp.einsum('ab,ia,ib->i', cc[:, :, nb3//2], g1, g2) * x3
-  normT3 = nufft.nufft2(cc3int, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3) + nufft.nufft2(cc[:,:,nb3//2], x1*2*np.pi/b1, x2*2*np.pi/b2) * x3
+  normT3 = nufft.nufft2(cc3int, x1*2*np.pi/b1, x2*2*np.pi/b2, x3*2*np.pi/b3, eps=ffteps) + nufft.nufft2(cc[:,:,nb3//2], x1*2*np.pi/b1, x2*2*np.pi/b2, eps=ffteps) * x3
 
   T1 = a1 + L1*normT1
   T2 = a2 + L2*normT2/rho1
@@ -595,7 +577,7 @@ def LearnTransportInverse(nb1, nb2, nb3, mf, N, shift):
         c = chebfit(F,g1,g2,g3,S)
         #c = nufft.nufft1((nb1, nb2, nb3), (F*(1+0.j)).flatten(), Xg1*2*np.pi/b1, Xg2*2*np.pi/b2, Xg3*2*np.pi/b3, eps=1.e-6)
 
-        ffit = nufft.nufft2(c, Xg1*2*np.pi/b1, Xg2*2*np.pi/b2, Xg3*2*np.pi/b3, eps=1.e-6)
+        ffit = nufft.nufft2(c, Xg1*2*np.pi/b1, Xg2*2*np.pi/b2, Xg3*2*np.pi/b3, eps=ffteps)
 
         Ffit = jnp.reshape(ffit,(ng1,ng2,ng3))
         Fhat = F/jnp.sum(F)
@@ -617,12 +599,10 @@ def LearnTransportInverse(nb1, nb2, nb3, mf, N, shift):
           #gZ2, _ = gfun(Z2,a2,b2,nb2)
           #gZ3, _ = gfun(Z3,a3,b3,nb3)
           #f = jnp.einsum('abc,ia,ib,ic->i',c,gZ1,gZ2,gZ3)
-          f = nufft.nufft2(c, Z1*2*np.pi/b1, Z2*2*np.pi/b2, Z3*2*np.pi/b3)
+          f = nufft.nufft2(c, Z1*2*np.pi/b1, Z2*2*np.pi/b2, Z3*2*np.pi/b3, eps=ffteps)
 
           F = jnp.reshape(f,(ng1,ng2,ng3))
 
-      import pdb
-      pdb.set_trace()
       Tg1,Tg2,Tg3,_ = flow(Xg1,Xg2,Xg3,C,a1,b1,a2,b2,a3,b3,N)
 
       print("")

@@ -951,7 +951,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     charge_convtol, convtol, de = 1.e-6, 1.e-6, 1.e-6
     density, j = np.zeros((ao.shape[1],)), np.zeros((ao.shape[1],))
 
-    for outer in range(5):
+    for outer in range(10):
         #dc = FDiisContext(10)
 
         if (ACE):
