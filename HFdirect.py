@@ -20,6 +20,13 @@ LindseyVals.argtypes = [
     ndpointer(ctypes.c_double, flags="C_CONTIGUOUS")
 ]
 '''
+Times_ ={"Davidson"   :0.,
+         "Poisson"    :0.,
+         "ACE"        :0.,
+         "Coulomb"    :0.,
+         "GetPtsJac"  :0.,
+         "InitAOCheck" :0.,
+         "InitMOCheck" :0.}
 
 def cond_and_body(y, invFlow, maxIter, alpha,tol):
     #@jit
@@ -762,17 +769,19 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
     '''
 
+    t0 = time.time()
     dx, dy, dz, Jac = invFlow(grid[:,0], grid[:,1], grid[:,2])
     #Jac = Jacfun(grid[:,0], grid[:,1], grid[:,2])
     Jac = np.asarray([np.linalg.inv(Ji) for Ji in Jac])
     JacDet = np.asarray([np.linalg.det(Ji) for Ji in Jac])  #|J|
     distortedGrid = jnp.hstack((dx.reshape(-1,1), dy.reshape(-1,1), dz.reshape(-1,1)))
+
+    Times_["GetPtsJac"] = time.time()-t0
     
     ngrid, nbas = np.prod(nmesh), np.prod(basMesh)
     G = get_Gv(nmesh, cell)
     G2 = np.einsum('gi,gi->g', G, G)
 
-    t0 = time.time()
 
         
 
@@ -793,6 +802,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     v0 = 1./JacDet**0.5
     v0 = v0/np.linalg.norm(v0)
     def V2e(vec, guess, tol=1.e-10):
+        t0P = time.time()
         vec2 = vec*JacDet**0.5
         
         vec2 = vec2 - vec2.dot(v0) * v0
@@ -808,6 +818,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
         #print("final error ", np.linalg.norm(error))
         
         potout = potout * JacDet**0.5
+        Times_['Poisson'] += time.time() - t0P
         return potout.real * 4. * np.pi 
         
 
@@ -828,7 +839,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
         nucDensity = getStructureFactor(nbas, flow, Jacfun, invFlow, cell).real
         nucPot = V2e(nucDensity, 0.*nucDensity).real #* nbas/cell.vol
         
-
+    t0= time.time()
     #'''
     N1 = mf.with_df.get_pp()
     S1 = cell.pbc_intor('cint1e_ovlp_sph')
@@ -847,6 +858,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     print(" nuc  ", abs(N-N1).max(), np.unravel_index(abs(N-N1).argmax(), N.shape), flush=True)  
     print(" kin  ", abs(K-K1).max(), np.unravel_index(abs(K-K1).argmax(), K.shape), flush=True)  
     print(" ovlp ", abs(S-S1).max(), flush=True)  
+    Times_["InitAOCheck"] = time.time() - t0
 
     nocc = cell.nelectron//2
     mocoeff = mf.mo_coeff
@@ -898,6 +910,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
             return (J+nucPot)*C + Hv2(C, JacDet, Jac, basMesh, G).real/2.         
     
     def precond(x, e0):
+        #return x/(nucPot-e0)
         return Condition(x, G2/2, basMesh, e0)
     
     if (mf.mo_coeff is not None):
@@ -910,7 +923,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     
     #conv, e, x0 = Davidson.davidson1(lambda C : FC(C, 0.*G2), Ck, precond, nroots=nelec//2, verbose=0)
     #print(basMesh, conv, e)
-
+    t0 = time.time()
     ACEguess = [[0.*orbs[0] for i in range(nocc)] for j in range(nocc)]
     aceOrbs = makeACE(orbs, V2e, nbas/cell.vol, ACEguess)   
     density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
@@ -938,7 +951,7 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     print("{0:14.8f}  {1:14.8f} {2:14.8f}".format(Energy, mf.e_tot, Energy-mf.e_tot))
     BetterEnergy = 2*np.einsum('ag,ab,bg', mocoeff[:,:nocc], K1, mocoeff[:,:nocc]) + 2*np.einsum('ag,ab,bg', mocoeff[:,:nocc], N1, mocoeff[:,:nocc])  + np.einsum('ig,ig', orbs, Hj) - np.einsum('ig,ig', orbs, Hk) + nuclearPotential 
     print("BestGuess (distroted Sinc DF) {0:14.8f}".format(BetterEnergy), flush=True)
-
+    Times_["InitMOCheck"] = time.time() - t0
     #orbs = moVal*(cell.vol/nbas)**0.5
     #orbs = np.einsum('gi,ij,g->jg', ao, mocoeff[:,:1], 1./JacDet**0.5) * (cell.vol/nbas)**0.5 #(ao.dot(mocoeff[:,:1])/JacDet**0.5).T
     #Ho = FC(orbs, j, orbs) if not ACE else FC(orbs, j, aceOrbs, True)
@@ -954,11 +967,14 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
     for outer in range(10):
         #dc = FDiisContext(10)
 
+        t0ace = time.time()
         if (ACE):
             for i in range(nocc):
                 for j in range(nocc):
                     ACEguess[i][j] = ACEguess[i][j]/JacDet**0.5
             aceOrbs = makeACE(orbs, V2e, nbas/cell.vol, ACEguess)
+        Times_["ACE"] += time.time() - t0ace
+
         density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
         j = V2e(density.real, j/(nbas/cell.vol)/4./np.pi/JacDet**0.5) * nbas/cell.vol
         
@@ -973,15 +989,20 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
 
         #print(davidsonTol, convtol, charge_convtol)
         for it in range(8):
+            t0d = time.time()
             conv, e, orbs = Davidson.davidson1(lambda C : FC(C, j, orbs) if not ACE else FC(C, j, aceOrbs, True), #FC(C, j, orbs), 
                                             orbs, precond, nroots=nelec//2, verbose=0, tol=davidsonTol)
+            Times_["Davidson"] += time.time()- t0d
+
             #orbs, e, iter, maxerror = Davidson.Davidson(lambda C : FC(C, j), precond, Ck)
             orbs = np.asarray(orbs)
             
             density = 2*np.einsum('ig,ig->g', orbs, orbs.conj())
             oldj = 1.*j
+            t0j = time.time()
             j = V2e(density, j/(nbas/cell.vol)/4./np.pi/JacDet**0.5) * nbas/cell.vol
-            
+            Times_["Coulomb"] += time.time() - t0j            
+
             error = j - oldj
             
             oldE = Energy
@@ -1007,7 +1028,13 @@ def HF(cell, basMesh, nmesh, mf, invFlow, flow, Jacfun, ACE = True,  eps = 1.e-6
         if (abs(Energy - outerEold) < charge_convtol):
             break
 
-        
+    print ("  >InitializeAOCheck      :{0:18.2f}".format(Times_['InitAOCheck']), flush=True)
+    print ("  >InitializeMOCheck      :{0:18.2f}".format(Times_['InitMOCheck']), flush=True)
+    print ("  >AllPoisson             :{0:18.2f}".format(Times_['Poisson']), flush=True)
+    print ("      >Coulomb            :{0:18.2f}".format(Times_['Coulomb']), flush=True)
+    print ("      >Exchange           :{0:18.2f}".format(Times_['ACE']), flush=True)
+    print ("  >Davidson               :{0:18.2f}".format(Times_['Davidson']), flush=True)
+
 
     return Energy.real , orbs 
 
