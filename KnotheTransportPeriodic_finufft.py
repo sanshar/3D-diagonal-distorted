@@ -77,14 +77,14 @@ def rhofun(x1,x2,x3, mf, shift):
           #density += 1./((xx1**2 + (0.5/Zi[a])**2)*(xx2**2 + (0.5/Zi[a])**2)*(xx3**2 + (0.5/Zi[a])**2))**0.5
 
           r = (xx1**2 + xx2**2 + xx3**2)**0.5
-          density += (jsp.special.erf((r+1e-6) * Zi[a] / 0.1) - jsp.special.erf((r+1e-6) /2.))/(r+1e-6) 
+          density += (jsp.special.erf((r+1e-6) * Zi[a] / 0.1) - jsp.special.erf((r+1e-6) /4.))/(r+1e-6) 
 
     #density += (jsp.special.erf((xx1+1e-6) * Zi[a] / 0.3) - jsp.special.erf((xx1+1e-6) /4.))/(xx1+1e-6) + 0.05**(1./3) \
     #  * (jsp.special.erf((xx2+1e-6) * Zi[a] / 0.3) - jsp.special.erf((xx2+1e-6) /4.))/(xx2+1e-6) + 0.05**(1./3) \
     #  * (jsp.special.erf((xx3+1e-6) * Zi[a] / 0.3) - jsp.special.erf((xx3+1e-6) /4.))/(xx3+1e-6) + 0.05**(1./3) 
 
     #density = 1.
-  return density + 0.03
+  return density + 0.01
   #return 1./mf.cell.vol
   #xx1, xx2, xx3 = x1-3, x2-3, x3-3.
   #return 1./(xx1**2 + xx2**2 + xx3**2 + 0.1**2)**0.5
@@ -145,7 +145,7 @@ def rhofun(x1,x2,x3, mf, shift):
 # hyperparameters for fixed-point iteration computation of inverse flow
 maxIter = 1000 # maximum number of iterations
 alpha = 1. # mixing parameter
-tol = 1e-8 # convergence tolerance
+tol = 1e-6 # convergence tolerance
 ffteps = 1.e-10
 
 
@@ -582,7 +582,7 @@ def LearnTransportInverse(nb1, nb2, nb3, mf, N, shift):
         Ffit = jnp.reshape(ffit,(ng1,ng2,ng3))
         Fhat = F/jnp.sum(F)
         Ffithat = Ffit/jnp.sum(Ffit)
-        print(jnp.max(jnp.abs(Ffithat-Fhat))/jnp.max(Fhat), flush=True)
+        #print(jnp.max(jnp.abs(Ffithat-Fhat))/jnp.max(Fhat), flush=True)
 
         c = c/jnp.linalg.norm(c)
         C = C.at[:,:,:,n].set(c)
@@ -606,6 +606,7 @@ def LearnTransportInverse(nb1, nb2, nb3, mf, N, shift):
       Tg1,Tg2,Tg3,_ = flow(Xg1,Xg2,Xg3,C,a1,b1,a2,b2,a3,b3,N)
 
       print("")
+      print("outer iteration: ", megaIter)
       print("Number of fixed-point iterations for inversion at each flow step:")
       print(itervec.astype(int))
 
